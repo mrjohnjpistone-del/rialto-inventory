@@ -1,0 +1,760 @@
+// ─── Rialto Inventory ────────────────────────────────────────────────────────
+// QR-code inventory for the Rialto's wardrobe, props, furniture and stock.
+// Zero npm dependencies, runs on any Node 18+. Phones are the scanners: every
+// sticker carries a QR that opens that item's page; the phone's own camera app
+// (or the in-app Scan button) is all anyone needs.
+//
+//   PAGES  /            the app (search, add, scan, locations, labels, settings)
+//          /i/:code     an item's page (unknown code = "new item with this label")
+//          /l/:code     a location's page (contents + shelf audit)
+//          /join?k=…    one-tap sign-in link (the crew poster QR points here)
+//          /print       printable QR sticker sheets (any label size)
+//          /poster      printable "scan to join" poster
+//
+//   API    POST /api/login              {key} → sets the sign-in cookie
+//          GET  /api/data               everything the app needs (items, locations…)
+//          GET  /api/events             live updates (Server-Sent Events)
+//          POST /api/items              add (code optional — claims a pre-printed label)
+//          PATCH /api/items/:code       edit (send only what changed)
+//          POST /api/items/:code/action {action: checkout|checkin|move|seen|missing, …}
+//          POST /api/items/:code/photos {full, thumb} (base64 JPEG)
+//          DELETE /api/items/:code/photos/:pid
+//          POST /api/locations / PATCH /api/locations/:code
+//          POST /api/reserve            {count} → reserves a run of blank label codes
+//          GET  /api/export.csv
+//   ADMIN  DELETE /api/items/:code, POST /api/restore, POST /api/settings, POST /api/import
+//
+// Storage: one JSON file + a photos folder in DATA_DIR. On Render's free plan the
+// disk is wiped on sleep, so (like the AFGM materials app) every change is also
+// mirrored to the key-gated store on the audition service, which has a paid disk:
+//   JSON   → BACKUP_URL            (…/api/blob/rialto-inventory)
+//   photos → BACKUP_FILES_URL/<n>  (…/api/file/<name>)
+// A boot whose mirror read fails never writes to the mirror (can't clobber good data).
+
+const http   = require('http');
+const fs     = require('fs');
+const path   = require('path');
+const crypto = require('crypto');
+const qrcode = require('./qrcode');
+
+const PORT       = process.env.PORT || 3000;
+const DATA_DIR   = process.env.DATA_DIR || path.join(__dirname, 'data');
+const DATA_FILE  = path.join(DATA_DIR, 'inventory.json');
+const PHOTO_DIR  = path.join(DATA_DIR, 'photos');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+
+const BACKUP_URL       = process.env.BACKUP_URL || '';
+const BACKUP_FILES_URL = (process.env.BACKUP_FILES_URL || '').replace(/\/+$/, '');
+const BACKUP_KEY       = process.env.BACKUP_KEY || '';
+
+// ── Vocabulary ───────────────────────────────────────────────────────────────
+const DEFAULT_CATEGORIES = ['Wardrobe', 'Props', 'Furniture', 'Set Pieces & Flats',
+  'Lighting', 'Sound & Video', 'Rigging & Hardware', 'Tools', 'Fabric & Soft Goods',
+  'Paint & Supplies', 'Office & Front of House', 'Other'];
+const STATUSES = ['Available', 'Checked out', 'In a show', 'Needs repair', 'Missing', 'Retired'];
+const CONDITIONS = ['New', 'Good', 'Fair', 'Poor', 'Needs repair'];
+const CODE_RE = /^[A-Z]{1,4}-\d{1,6}$/;
+const LOC_RE  = /^L-\d{1,5}$/;
+
+// ── Store ────────────────────────────────────────────────────────────────────
+function randKey(n) {
+  const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = ''; const b = crypto.randomBytes(n);
+  for (let i = 0; i < n; i++) s += a[b[i] % a.length];
+  return s;
+}
+function freshStore() {
+  return {
+    settings: {
+      title: 'Rialto Inventory',
+      org: 'Rialto Community Arts Center',
+      prefix: 'R',
+      next_num: 1,
+      next_loc: 1,
+      categories: DEFAULT_CATEGORIES.slice(),
+      crew_key: process.env.CREW_KEY || ('RIALTO-' + randKey(4)),
+      admin_key: process.env.ADMIN_KEY || ('ADMIN-' + randKey(8)),
+    },
+    items: [],
+    locations: [],
+    removed: [],
+  };
+}
+
+fs.mkdirSync(PHOTO_DIR, { recursive: true });
+let hadLocalFile = false;
+let store = freshStore();
+try {
+  store = normalize(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
+  hadLocalFile = true;
+} catch (e) { /* first run, or a wiped free-plan disk — the mirror restore fills it */ }
+
+function normalize(d) {
+  const f = freshStore();
+  const out = {
+    settings: Object.assign({}, f.settings, (d && d.settings) || {}),
+    items: Array.isArray(d && d.items) ? d.items : [],
+    locations: Array.isArray(d && d.locations) ? d.locations : [],
+    removed: Array.isArray(d && d.removed) ? d.removed : [],
+  };
+  if (!Array.isArray(out.settings.categories) || !out.settings.categories.length)
+    out.settings.categories = DEFAULT_CATEGORIES.slice();
+  // Env keys win, so a key set on the host is never shadowed by an old stored one.
+  if (process.env.CREW_KEY && !out.settings.crew_key_rotated) out.settings.crew_key = process.env.CREW_KEY;
+  if (process.env.ADMIN_KEY && !out.settings.admin_key_rotated) out.settings.admin_key = process.env.ADMIN_KEY;
+  for (const it of out.items) { if (!Array.isArray(it.photos)) it.photos = []; if (!Array.isArray(it.history)) it.history = []; }
+  return out;
+}
+
+let writeChain = Promise.resolve();
+let writes = 0;
+function save() {
+  writes++;
+  const snapshot = JSON.stringify(store);
+  writeChain = writeChain.then(() => new Promise((res) => {
+    try {
+      const tmp = DATA_FILE + '.tmp';
+      fs.writeFileSync(tmp, snapshot);
+      fs.renameSync(tmp, DATA_FILE); // atomic replace
+    } catch (e) { console.error('save error:', e.message); }
+    res();
+  }));
+  pushBackup();
+  return writeChain;
+}
+
+// ── Off-box mirror (same rules as afgm-materials) ────────────────────────────
+const MIRRORED  = Boolean(BACKUP_URL && BACKUP_KEY);
+let restoreDone = !MIRRORED || hadLocalFile;
+let pushWaiting = false, pushTimer = null, restoreTry = 0;
+
+function pushBackup(now) {
+  if (!MIRRORED) return;
+  if (!restoreDone) { pushWaiting = true; return; }
+  if (pushTimer) clearTimeout(pushTimer);
+  const send = () => {
+    pushTimer = null;
+    return fetch(BACKUP_URL, {
+      method: 'PUT',
+      headers: { 'x-staff-key': BACKUP_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify(store),
+    }).then((r) => { if (!r.ok) console.error('backup push answered', r.status); })
+      .catch((e) => console.error('backup push failed:', e.message));
+  };
+  if (now) return send();
+  pushTimer = setTimeout(send, 2000);
+}
+
+async function restoreFromBackup() {
+  if (restoreDone) return;
+  try {
+    const r = await fetch(BACKUP_URL, { headers: { 'x-staff-key': BACKUP_KEY } });
+    if (r.status === 404) console.log('mirror is empty — starting fresh');
+    else if (!r.ok) throw new Error('mirror answered ' + r.status);
+    else {
+      const d = await r.json();
+      if (!d || !Array.isArray(d.items)) throw new Error('mirror held nothing usable');
+      if (writes) console.log('skipped restore — already written to on this boot');
+      else { store = normalize(d); console.log('restored ' + store.items.length + ' items from the mirror'); }
+    }
+    restoreDone = true;
+    if (!hadLocalFile && !writes) save();
+    if (pushWaiting) { pushWaiting = false; pushBackup(); }
+    broadcast({ t: 'reload' });
+  } catch (e) {
+    restoreTry++;
+    console.error('restore attempt ' + restoreTry + ' failed (' + e.message + '); retrying in 30s');
+    setTimeout(restoreFromBackup, 30000);
+  }
+}
+
+function mirrorPhoto(name, buf) {
+  if (!BACKUP_FILES_URL || !BACKUP_KEY) return Promise.resolve();
+  const go = (n) => fetch(BACKUP_FILES_URL + '/' + name, {
+    method: 'PUT', headers: { 'x-staff-key': BACKUP_KEY, 'Content-Type': 'image/jpeg' }, body: buf,
+  }).then((r) => { if (!r.ok) throw new Error('answered ' + r.status); })
+    .catch((e) => {
+      if (n < 4) return new Promise((ok) => setTimeout(ok, 3000 * (n + 1))).then(() => go(n + 1));
+      console.error('photo mirror failed for ' + name + ':', e.message);
+    });
+  return go(0);
+}
+async function fetchMirroredPhoto(name) {
+  if (!BACKUP_FILES_URL || !BACKUP_KEY) return null;
+  try {
+    const r = await fetch(BACKUP_FILES_URL + '/' + name, { headers: { 'x-staff-key': BACKUP_KEY } });
+    if (!r.ok) return null;
+    return Buffer.from(await r.arrayBuffer());
+  } catch (e) { return null; }
+}
+
+// ── Live updates ─────────────────────────────────────────────────────────────
+const clients = new Set();
+function broadcast(msg) {
+  const line = 'data: ' + JSON.stringify(msg) + '\n\n';
+  for (const c of clients) { try { c.write(line); } catch (e) { clients.delete(c); } }
+}
+setInterval(() => { for (const c of clients) { try { c.write(': ping\n\n'); } catch (e) { clients.delete(c); } } }, 25000).unref();
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function s(v, max) { return typeof v === 'string' ? v.trim().slice(0, max) : (typeof v === 'number' ? String(v).slice(0, max) : ''); }
+function num(v, min, max, dflt) { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : dflt; }
+function money(v) { const n = Number(String(v || '').replace(/[$,\s]/g, '')); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null; }
+function esc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function clientIp(req) {
+  const xf = req.headers['x-forwarded-for'];
+  return (xf ? String(xf).split(',')[0].trim() : '') || req.socket.remoteAddress || 'unknown';
+}
+function sendJson(res, code, obj) {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(obj));
+}
+function sendHtml(res, html, code) {
+  res.writeHead(code || 200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' });
+  res.end(html);
+}
+function readText(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', (c) => { size += c.length; if (size > limit) { reject(new Error('too big')); req.destroy(); } else chunks.push(c); });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+async function readBody(req, limit) {
+  const t = await readText(req, limit || 200 * 1024);
+  if (!t) return {};
+  try { return JSON.parse(t); } catch (e) { const er = new Error('bad json'); er.status = 400; throw er; }
+}
+function cookies(req) {
+  const out = {};
+  String(req.headers.cookie || '').split(';').forEach((p) => {
+    const i = p.indexOf('='); if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim());
+  });
+  return out;
+}
+function role(req) {
+  const k = cookies(req).rk || req.headers['x-key'] || '';
+  if (!k) return null;
+  if (k === store.settings.admin_key) return 'admin';
+  if (k === store.settings.crew_key) return 'crew';
+  return null;
+}
+function setKeyCookie(res, key) {
+  res.setHeader('Set-Cookie', 'rk=' + encodeURIComponent(key) + '; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax' +
+    (PUBLIC_URL.startsWith('https') ? '; Secure' : ''));
+}
+function baseUrl(req) {
+  if (PUBLIC_URL) return PUBLIC_URL;
+  const proto = (req.headers['x-forwarded-proto'] || 'http').split(',')[0];
+  return proto + '://' + req.headers.host;
+}
+function who(req) { return s(decodeURIComponent(req.headers['x-user'] || ''), 60) || 'Someone'; }
+
+// Login throttle: 12 wrong codes / 15 min / IP.
+const loginFails = new Map();
+function loginBlocked(ip) {
+  const now = Date.now(); const a = (loginFails.get(ip) || []).filter((t) => now - t < 15 * 60 * 1000);
+  loginFails.set(ip, a); return a.length >= 12;
+}
+
+// ── Items ────────────────────────────────────────────────────────────────────
+function findItem(code) { return store.items.find((i) => i.code === code); }
+function findLoc(code) { return store.locations.find((l) => l.code === code); }
+function pad(n, w) { return String(n).padStart(w, '0'); }
+function codeNum(code) { return Number(String(code).split('-')[1]) || 0; }
+function nextCode() {
+  const p = store.settings.prefix;
+  let n = store.settings.next_num;
+  while (findItem(p + '-' + pad(n, 4))) n++;
+  store.settings.next_num = n + 1;
+  return p + '-' + pad(n, 4);
+}
+function bumpPastCode(code) {
+  if (code.startsWith(store.settings.prefix + '-')) {
+    const n = codeNum(code);
+    if (n >= store.settings.next_num) store.settings.next_num = n + 1;
+  }
+}
+function log(item, by, action, detail) {
+  item.history.unshift({ at: new Date().toISOString(), by, action, detail: detail || '' });
+  if (item.history.length > 60) item.history.length = 60;
+}
+const TEXT_FIELDS = { name: 120, category: 60, description: 1500, color: 60, size: 60, period: 80,
+  tags: 200, notes: 1500, holder: 80, show: 120, due: 20, location: 12, sublocation: 80, condition: 30, status: 30 };
+function applyFields(item, b) {
+  const changed = [];
+  for (const [k, max] of Object.entries(TEXT_FIELDS)) {
+    if (!Object.prototype.hasOwnProperty.call(b, k)) continue;
+    let v = s(b[k], max);
+    if (k === 'status' && v && !STATUSES.includes(v)) v = 'Available';
+    if (k === 'condition' && v && !CONDITIONS.includes(v)) v = '';
+    if (k === 'location' && v && !findLoc(v)) v = '';
+    if (k === 'category' && !v) v = 'Other';
+    if (k === 'name' && !v) continue;
+    if ((item[k] || '') !== v) { item[k] = v; changed.push(k); }
+  }
+  if (Object.prototype.hasOwnProperty.call(b, 'qty')) {
+    const q = num(b.qty, 0, 100000, 1); if (item.qty !== q) { item.qty = q; changed.push('qty'); }
+  }
+  if (Object.prototype.hasOwnProperty.call(b, 'value')) {
+    const v = money(b.value); if (item.value !== v) { item.value = v; changed.push('value'); }
+  }
+  return changed;
+}
+function itemOut(it) { const o = Object.assign({}, it); o.history = it.history.slice(0, 60); return o; }
+
+// ── Static files ─────────────────────────────────────────────────────────────
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.ico': 'image/x-icon' };
+function serveStatic(res, rel) {
+  const file = path.join(PUBLIC_DIR, rel);
+  if (!file.startsWith(PUBLIC_DIR)) return false;
+  let data; try { data = fs.readFileSync(file); } catch (e) { return false; }
+  const ext = path.extname(file);
+  res.writeHead(200, { 'Content-Type': TYPES[ext] || 'application/octet-stream',
+    'Cache-Control': rel.startsWith('vendor/') ? 'public, max-age=604800' : 'no-cache' });
+  res.end(data); return true;
+}
+const APP_ROUTES = /^\/(|i\/[^/]+|l\/[^/]+|add|browse|scan|locations|labels|settings|audit\/[^/]+|recent)$/;
+
+// ── QR → SVG (server side, for print pages) ──────────────────────────────────
+function qrSvg(text) {
+  const q = qrcode(0, 'M'); q.addData(text); q.make();
+  const n = q.getModuleCount(); const m = 2; // quiet zone in modules (scanners like ≥2 on stickers)
+  let d = '';
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (q.isDark(r, c)) d += 'M' + (c + m) + ' ' + (r + m) + 'h1v1h-1z';
+  const w = n + 2 * m;
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + w + '" shape-rendering="crispEdges"><rect width="' + w + '" height="' + w + '" fill="#fff"/><path d="' + d + '" fill="#000"/></svg>';
+}
+
+// Label sizes. w/h in inches. 'sheet' = a letter page of many labels.
+const SIZES = {
+  '2x1':      { name: '2" × 1" thermal roll', w: 2, h: 1 },
+  '2.25x1.25':{ name: '2¼" × 1¼" (Dymo 30334, Rollo)', w: 2.25, h: 1.25 },
+  '1.5x1':    { name: '1½" × 1" small thermal', w: 1.5, h: 1 },
+  '1x1':      { name: '1" × 1" square', w: 1, h: 1 },
+  '2x2':      { name: '2" × 2" square', w: 2, h: 2 },
+  '62x29mm':  { name: 'Brother 62 × 29 mm (DK-11209)', w: 62 / 25.4, h: 29 / 25.4 },
+  '4x6':      { name: '4" × 6" shipping label (bins/racks)', w: 4, h: 6 },
+  'avery5160':{ name: 'Avery 5160 letter sheet (30 per page)', w: 2.625, h: 1, sheet: { cols: 3, rows: 10, top: 0.5, left: 0.1875, gapx: 0.125, gapy: 0 } },
+  'avery22806':{ name: 'Avery 22806 letter sheet (12 squares 2")', w: 2, h: 2, sheet: { cols: 3, rows: 4, top: 0.625, left: 0.625, gapx: 0.625, gapy: 0.5 } },
+};
+
+function printPage(req, url) {
+  const base = baseUrl(req);
+  const sizeKey = SIZES[url.searchParams.get('size')] ? url.searchParams.get('size') : '2x1';
+  const size = SIZES[sizeKey];
+  const showName = url.searchParams.get('names') !== '0';
+  const kind = url.searchParams.get('kind') || 'items';
+  let codes = (url.searchParams.get('codes') || '').split(',').map((c) => c.trim().toUpperCase()).filter(Boolean);
+  const from = url.searchParams.get('from'), count = num(url.searchParams.get('count'), 1, 1000, 0);
+  if (from && count) {
+    const [p, n0] = from.toUpperCase().split('-'); const start = Number(n0) || 1;
+    codes = []; for (let i = 0; i < count; i++) codes.push(p + '-' + pad(start + i, kind === 'locations' ? 3 : 4));
+  }
+  codes = codes.filter((c) => CODE_RE.test(c) || LOC_RE.test(c)).slice(0, 1000);
+  const copies = num(url.searchParams.get('copies'), 1, 10, 1);
+  const labels = [];
+  for (const c of codes) {
+    const isLoc = LOC_RE.test(c);
+    const thing = isLoc ? findLoc(c) : findItem(c);
+    const title = thing ? thing.name : '';
+    for (let k = 0; k < copies; k++) labels.push({ code: c, isLoc, title, href: base + (isLoc ? '/l/' : '/i/') + c });
+  }
+  const W = size.w, H = size.h;
+  // Wide labels: QR left, text right. Square/tall labels: QR on top, code under it.
+  const stacked = W < H * 1.5;
+  const qrIn = stacked ? Math.min(W - 0.12, H * 0.68) : H - 0.12;
+  const textW = stacked ? W - 0.12 : W - qrIn - 0.2;           // inches available for the code
+  // A bold 6-char code is ~4 em wide → size the font to fit, capped by the label height.
+  const font = Math.max(6, Math.min((textW * 72) / 4.2, stacked ? (H - qrIn) * 72 * 0.45 : H * 72 * 0.3, 40));
+  const labs = labels.map((l) => {
+    const txt = '<div class="t"><div class="c" style="font-size:' + font.toFixed(1) + 'pt">' + esc(l.code) + '</div>' +
+      (showName && l.title && !(stacked && H < 1.6) ? '<div class="n" style="font-size:' + Math.max(5.5, font * 0.5).toFixed(1) + 'pt">' + esc(l.title) + '</div>' : '') +
+      (stacked && H < 1.6 ? '' : '<div class="o" style="font-size:' + Math.max(5, font * 0.38).toFixed(1) + 'pt">' + esc(l.isLoc ? 'PLACE · ' + store.settings.org : store.settings.org) + '</div>') + '</div>';
+    const qr = '<div class="q" style="width:' + qrIn.toFixed(3) + 'in;height:' + qrIn.toFixed(3) + 'in">' + qrSvg(l.href) + '</div>';
+    return '<div class="lab' + (stacked ? ' por' : '') + '">' + qr + txt + '</div>';
+  });
+  if (size.sheet) {
+    const sh = size.sheet;
+    const pageCss = '@page{size:8.5in 11in;margin:0}' +
+      '.sheet{width:8.5in;height:11in;padding:' + sh.top + 'in 0 0 ' + sh.left + 'in;box-sizing:border-box;display:grid;grid-template-columns:repeat(' + sh.cols + ',' + W + 'in);grid-auto-rows:' + H + 'in;column-gap:' + sh.gapx + 'in;row-gap:' + sh.gapy + 'in;align-content:start;page-break-after:always;break-after:page}' +
+      '.lab{width:' + W + 'in;height:' + H + 'in}';
+    const per = sh.cols * sh.rows;
+    let html = ''; for (let i = 0; i < labs.length; i += per) html += '<div class="sheet">' + labs.slice(i, i + per).join('') + '</div>';
+    return sendPrint(labels.length, sizeKey, pageCss, html);
+  }
+  const pageCss = '@page{size:' + W.toFixed(3) + 'in ' + H.toFixed(3) + 'in;margin:0}' +
+    '.lab{width:' + W.toFixed(3) + 'in;height:' + H.toFixed(3) + 'in;page-break-after:always;break-after:page}';
+  return sendPrint(labels.length, sizeKey, pageCss, labs.join(''));
+}
+function sendPrint(n, sizeKey, pageCss, body) {
+  const opts = Object.entries(SIZES).map(([k, v]) => '<option value="' + k + '"' + (k === sizeKey ? ' selected' : '') + '>' + esc(v.name) + '</option>').join('');
+  return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Print labels</title><style>' +
+    'html,body{margin:0;background:#fff;color:#000;font-family:Arial,Helvetica,sans-serif}' + pageCss +
+    '.lab{box-sizing:border-box;padding:.05in;display:flex;align-items:center;gap:.06in;overflow:hidden}' +
+    '.lab.por{flex-direction:column;justify-content:center;text-align:center}' +
+    '.q{flex:none}.q svg{width:100%;height:100%;display:block}' +
+    '.t{min-width:0;flex:1;line-height:1.1}.c{font-weight:900;letter-spacing:.02em;white-space:nowrap}' +
+    '.n{font-weight:700;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;margin-top:.02in}' +
+    '.o{color:#333;margin-top:.03in;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+    '.bar{font:16px Arial;padding:12px 16px;background:#f3efe6;border-bottom:1px solid #ccc;display:flex;flex-wrap:wrap;gap:10px;align-items:center}' +
+    '.bar button,.bar select{font-size:16px;padding:8px 12px}.bar b{margin-right:auto}' +
+    '@media print{.bar{display:none}}' +
+    '</style></head><body><div class="bar"><b>' + n + ' label' + (n === 1 ? '' : 's') + '</b>' +
+    '<label>Size <select onchange="var u=new URL(location.href);u.searchParams.set(\'size\',this.value);location.href=u">' + opts + '</select></label>' +
+    '<button onclick="window.print()">Print</button><button onclick="history.length>1?history.back():location.href=\'/labels\'">Back</button></div>' +
+    body + '</body></html>';
+}
+
+function posterPage(req) {
+  const join = baseUrl(req) + '/join?k=' + encodeURIComponent(store.settings.crew_key);
+  return '<!doctype html><html><head><meta charset="utf-8"><title>Join the inventory</title><style>@page{size:8.5in 11in;margin:.5in}' +
+    'body{font-family:Arial,Helvetica,sans-serif;text-align:center;color:#000;margin:0}h1{font-size:44pt;margin:.2in 0 .1in}' +
+    'p{font-size:20pt;margin:.1in 0}.q{width:5.2in;height:5.2in;margin:.25in auto}.q svg{width:100%;height:100%}' +
+    'ol{text-align:left;font-size:18pt;max-width:6.5in;margin:.2in auto;line-height:1.5}.k{font-size:16pt;color:#333}' +
+    '@media print{button{display:none}}button{font-size:18px;padding:10px 18px;margin:10px}</style></head><body>' +
+    '<button onclick="print()">Print this poster</button>' +
+    '<h1>Help inventory the Rialto</h1><p>Point your phone camera here to join</p><div class="q">' + qrSvg(join) + '</div>' +
+    '<ol><li>Open your phone camera and point it at the code above.</li><li>Tap the link that pops up. Type your name once.</li>' +
+    '<li>Scan any sticker on an item to see it, move it, or check it out.</li></ol>' +
+    '<p class="k">No app to install · Crew code: <b>' + esc(store.settings.crew_key) + '</b><br>' + esc(join) + '</p></body></html>';
+}
+
+function loginPage(msg) {
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>Rialto Inventory</title><link rel="stylesheet" href="/app.css"></head><body class="login"><main class="card narrow">' +
+    '<h1>Rialto Inventory</h1><p>Enter the crew code to start. You only do this once on each phone.</p>' +
+    (msg ? '<p class="err">' + esc(msg) + '</p>' : '') +
+    '<form method="post" action="/login"><label>Crew code<input name="key" autocomplete="off" autocapitalize="characters" required autofocus></label>' +
+    '<input type="hidden" name="next" value=""><button class="btn big">Start</button></form>' +
+    '<p class="muted">No code? Ask whoever runs the inventory, or scan the crew poster.</p>' +
+    '<script>document.querySelector("[name=next]").value=location.pathname+location.search</script></main></body></html>';
+}
+
+// ── Server ───────────────────────────────────────────────────────────────────
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://x');
+  const p = url.pathname.replace(/\/+$/, '') || '/';
+  const method = req.method;
+  try {
+    if (p === '/health') return sendJson(res, 200, { ok: true, items: store.items.length, restored: restoreDone });
+    if (method === 'GET' && ['/app.css', '/manifest.webmanifest', '/icon.svg'].includes(p) && serveStatic(res, p.slice(1))) return;
+    if (method === 'GET' && p === '/favicon.ico' && serveStatic(res, 'icon.svg')) return;
+
+    // Sign-in
+    if (method === 'GET' && p === '/join') {
+      const k = s(url.searchParams.get('k'), 80);
+      if (k === store.settings.crew_key || k === store.settings.admin_key) {
+        setKeyCookie(res, k); res.writeHead(302, { Location: '/?welcome=1' }); return res.end();
+      }
+      return sendHtml(res, loginPage('That join link is out of date. Ask for the current crew code.'), 401);
+    }
+    if (method === 'POST' && (p === '/login' || p === '/api/login')) {
+      const ip = clientIp(req);
+      if (loginBlocked(ip)) return p === '/login' ? sendHtml(res, loginPage('Too many tries. Wait 15 minutes.'), 429) : sendJson(res, 429, { error: 'Too many tries. Wait 15 minutes.' });
+      let key = '', next = '/';
+      if (p === '/login') {
+        const t = await readText(req, 4096); const f = new URLSearchParams(t);
+        key = s(f.get('key'), 80).toUpperCase(); next = s(f.get('next'), 200) || '/';
+      } else { const b = await readBody(req); key = s(b.key, 80).toUpperCase(); }
+      const ok = key && (key === store.settings.crew_key.toUpperCase() || key === store.settings.admin_key.toUpperCase());
+      if (!ok) {
+        loginFails.get(ip) ? loginFails.get(ip).push(Date.now()) : loginFails.set(ip, [Date.now()]);
+        return p === '/login' ? sendHtml(res, loginPage('That code did not work. Check it and try again.'), 401) : sendJson(res, 401, { error: 'Wrong code.' });
+      }
+      const real = key === store.settings.admin_key.toUpperCase() ? store.settings.admin_key : store.settings.crew_key;
+      setKeyCookie(res, real);
+      if (p === '/login') { res.writeHead(303, { Location: next.startsWith('/') && !next.startsWith('//') ? next : '/' }); return res.end(); }
+      return sendJson(res, 200, { ok: true, role: real === store.settings.admin_key ? 'admin' : 'crew' });
+    }
+    if (p === '/logout') { res.setHeader('Set-Cookie', 'rk=; Path=/; Max-Age=0'); res.writeHead(302, { Location: '/' }); return res.end(); }
+
+    const r = role(req);
+
+    // Pages
+    if (method === 'GET' && (APP_ROUTES.test(p))) {
+      if (!r) return sendHtml(res, loginPage(''));
+      return serveStatic(res, 'index.html') || sendHtml(res, 'missing index', 500);
+    }
+    if (method === 'GET' && (p === '/app.js' || p.startsWith('/vendor/'))) {
+      if (serveStatic(res, p.slice(1))) return;
+    }
+    if (method === 'GET' && p === '/print') { if (!r) return sendHtml(res, loginPage('')); return sendHtml(res, printPage(req, url)); }
+    if (method === 'GET' && p === '/poster') { if (r !== 'admin') return sendHtml(res, loginPage('The poster needs the admin code.')); return sendHtml(res, posterPage(req)); }
+
+    // Photos
+    const pm = p.match(/^\/p\/([a-f0-9]{16,40}(?:_t)?)\.jpg$/);
+    if (method === 'GET' && pm) {
+      if (!r) { res.writeHead(401); return res.end(); }
+      const file = path.join(PHOTO_DIR, pm[1] + '.jpg');
+      let buf = null; try { buf = fs.readFileSync(file); } catch (e) {
+        buf = await fetchMirroredPhoto('rinv-' + pm[1]);
+        if (buf) { try { fs.writeFileSync(file, buf); } catch (e2) { /* cache best-effort */ } }
+      }
+      if (!buf) { res.writeHead(404); return res.end(); }
+      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=31536000, immutable' });
+      return res.end(buf);
+    }
+
+    if (!p.startsWith('/api/')) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('Not found'); }
+    if (!r) return sendJson(res, 401, { error: 'Sign in first.' });
+    // Writes must carry our header: a cross-site form can't add one, so this blocks CSRF.
+    if (method !== 'GET' && req.headers['x-rialto'] !== '1') return sendJson(res, 403, { error: 'Bad request origin.' });
+    const by = who(req);
+    const isAdmin = r === 'admin';
+
+    if (method === 'GET' && p === '/api/data') {
+      const st = store.settings;
+      return sendJson(res, 200, {
+        role: r, base: baseUrl(req),
+        settings: { title: st.title, org: st.org, prefix: st.prefix, next_num: st.next_num, next_loc: st.next_loc, categories: st.categories,
+          crew_key: isAdmin ? st.crew_key : undefined, admin_key: isAdmin ? st.admin_key : undefined },
+        statuses: STATUSES, conditions: CONDITIONS, sizes: Object.fromEntries(Object.entries(SIZES).map(([k, v]) => [k, v.name])),
+        items: store.items.map(itemOut), locations: store.locations,
+        removed: isAdmin ? store.removed.map((i) => ({ code: i.code, name: i.name, removed_at: i.removed_at, removed_by: i.removed_by })) : [],
+      });
+    }
+
+    if (method === 'GET' && p === '/api/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+      res.write('retry: 4000\n\n'); clients.add(res);
+      req.on('close', () => clients.delete(res));
+      return;
+    }
+
+    if (method === 'GET' && p === '/api/export.csv') {
+      const cols = ['code', 'name', 'category', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'period', 'tags', 'value', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
+      const q = (v) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+      const base = baseUrl(req);
+      const rows = store.items.map((i) => cols.map((c) => c === 'location_name' ? ((findLoc(i.location) || {}).name || '') :
+        c === 'photos' ? i.photos.map((x) => base + '/p/' + x + '.jpg').join(' ') : i[c]).map(q).join(','));
+      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="rialto-inventory-' + new Date().toISOString().slice(0, 10) + '.csv"' });
+      return res.end('﻿' + cols.join(',') + '\n' + rows.join('\n'));
+    }
+
+    // Add an item
+    if (method === 'POST' && p === '/api/items') {
+      const b = await readBody(req);
+      if (!s(b.name, 120)) return sendJson(res, 400, { error: 'Give the item a name.' });
+      let code = s(b.code, 16).toUpperCase();
+      if (code) {
+        if (!CODE_RE.test(code)) return sendJson(res, 400, { error: 'That label code does not look right.' });
+        if (findItem(code)) return sendJson(res, 409, { error: code + ' is already on another item.', code });
+        bumpPastCode(code);
+      } else code = nextCode();
+      const now = new Date().toISOString();
+      const item = { code, name: '', category: 'Other', qty: 1, status: 'Available', condition: '', location: '', sublocation: '',
+        color: '', size: '', period: '', tags: '', value: null, description: '', notes: '', holder: '', show: '', due: '',
+        photos: [], history: [], created_at: now, created_by: by, updated_at: now, updated_by: by, last_seen: now };
+      applyFields(item, b);
+      log(item, by, 'Added', item.location ? 'at ' + ((findLoc(item.location) || {}).name || item.location) : '');
+      store.items.push(item); save();
+      broadcast({ t: 'item', item: itemOut(item) });
+      return sendJson(res, 200, { ok: true, item: itemOut(item) });
+    }
+
+    const im = p.match(/^\/api\/items\/([A-Z0-9-]+)(\/.*)?$/i);
+    if (im) {
+      const code = im[1].toUpperCase(); const sub = im[2] || '';
+      const item = findItem(code);
+      if (!item) return sendJson(res, 404, { error: 'No item ' + code + ' yet.' });
+
+      if (method === 'PATCH' && !sub) {
+        const b = await readBody(req);
+        const prevLoc = item.location;
+        const changed = applyFields(item, b);
+        if (changed.length) {
+          item.updated_at = new Date().toISOString(); item.updated_by = by;
+          const rest = changed.filter((c) => c !== 'location').join(', ');
+          const mv = changed.includes('location') ? 'moved ' + (prevLoc ? 'from ' + ((findLoc(prevLoc) || {}).name || prevLoc) + ' ' : '') + 'to ' + ((findLoc(item.location) || {}).name || 'no location') : '';
+          log(item, by, 'Edited', [mv, rest].filter(Boolean).join('; '));
+          save(); broadcast({ t: 'item', item: itemOut(item) });
+        }
+        return sendJson(res, 200, { ok: true, item: itemOut(item) });
+      }
+
+      if (method === 'DELETE' && !sub) {
+        if (!isAdmin) return sendJson(res, 403, { error: 'Removing items needs the admin code. Mark it Retired instead.' });
+        store.items = store.items.filter((i) => i !== item);
+        item.removed_at = new Date().toISOString(); item.removed_by = by;
+        store.removed.unshift(item); if (store.removed.length > 500) store.removed.length = 500;
+        save(); broadcast({ t: 'del', code });
+        return sendJson(res, 200, { ok: true });
+      }
+
+      if (method === 'POST' && sub === '/action') {
+        const b = await readBody(req);
+        const a = s(b.action, 20); const now = new Date().toISOString();
+        if (a === 'checkout') {
+          const holder = s(b.holder, 80); if (!holder) return sendJson(res, 400, { error: 'Who is taking it?' });
+          item.holder = holder; item.show = s(b.show, 120); item.due = s(b.due, 20);
+          item.status = b.in_show ? 'In a show' : 'Checked out';
+          log(item, by, item.status === 'In a show' ? 'Pulled for show' : 'Checked out', holder + (item.show ? ' · ' + item.show : '') + (item.due ? ' · due ' + item.due : ''));
+        } else if (a === 'checkin') {
+          const was = item.holder;
+          item.holder = ''; item.show = ''; item.due = ''; item.status = 'Available'; item.last_seen = now;
+          if (b.location && findLoc(s(b.location, 12))) item.location = s(b.location, 12);
+          log(item, by, 'Returned', (was ? 'from ' + was : '') + (item.location ? ' to ' + ((findLoc(item.location) || {}).name || item.location) : ''));
+        } else if (a === 'move' || a === 'seen') {
+          const loc = s(b.location, 12);
+          if (loc && !findLoc(loc)) return sendJson(res, 400, { error: 'Unknown location.' });
+          const moved = loc && loc !== item.location;
+          if (loc) item.location = loc;
+          if (Object.prototype.hasOwnProperty.call(b, 'sublocation')) item.sublocation = s(b.sublocation, 80);
+          item.last_seen = now;
+          if (item.status === 'Missing') item.status = 'Available';
+          log(item, by, moved ? 'Moved' : 'Seen', loc ? ((moved ? 'to ' : 'at ') + findLoc(loc).name) : '');
+        } else if (a === 'missing') {
+          item.status = 'Missing'; log(item, by, 'Marked missing', s(b.note, 200));
+        } else return sendJson(res, 400, { error: 'Unknown action.' });
+        item.updated_at = now; item.updated_by = by;
+        save(); broadcast({ t: 'item', item: itemOut(item) });
+        return sendJson(res, 200, { ok: true, item: itemOut(item) });
+      }
+
+      if (method === 'POST' && sub === '/photos') {
+        if (item.photos.length >= 12) return sendJson(res, 400, { error: 'That item already has 12 photos. Remove one first.' });
+        const b = await readBody(req, 6 * 1024 * 1024);
+        const dec = (v) => { const m = String(v || '').match(/^data:image\/jpeg;base64,(.+)$/); return m ? Buffer.from(m[1], 'base64') : null; };
+        const full = dec(b.full), thumb = dec(b.thumb);
+        if (!full || full.length < 100 || full[0] !== 0xff || full[1] !== 0xd8) return sendJson(res, 400, { error: 'That photo could not be read.' });
+        const pid = crypto.randomBytes(10).toString('hex');
+        fs.writeFileSync(path.join(PHOTO_DIR, pid + '.jpg'), full);
+        const th = thumb && thumb[0] === 0xff ? thumb : full;
+        fs.writeFileSync(path.join(PHOTO_DIR, pid + '_t.jpg'), th);
+        mirrorPhoto('rinv-' + pid, full); mirrorPhoto('rinv-' + pid + '_t', th);
+        item.photos.push(pid); item.updated_at = new Date().toISOString(); item.updated_by = by;
+        log(item, by, 'Added photo', ''); save(); broadcast({ t: 'item', item: itemOut(item) });
+        return sendJson(res, 200, { ok: true, item: itemOut(item) });
+      }
+      const dm = sub.match(/^\/photos\/([a-f0-9]{16,40})$/);
+      if (method === 'DELETE' && dm) {
+        item.photos = item.photos.filter((x) => x !== dm[1]);
+        log(item, by, 'Removed photo', ''); save(); broadcast({ t: 'item', item: itemOut(item) });
+        return sendJson(res, 200, { ok: true, item: itemOut(item) });
+      }
+      if (method === 'POST' && sub === '/cover') {
+        const b = await readBody(req); const pid = s(b.pid, 40);
+        if (item.photos.includes(pid)) { item.photos = [pid].concat(item.photos.filter((x) => x !== pid)); save(); broadcast({ t: 'item', item: itemOut(item) }); }
+        return sendJson(res, 200, { ok: true, item: itemOut(item) });
+      }
+      return sendJson(res, 404, { error: 'Not found' });
+    }
+
+    // Locations
+    if (method === 'POST' && p === '/api/locations') {
+      const b = await readBody(req);
+      const name = s(b.name, 80); if (!name) return sendJson(res, 400, { error: 'Name the location (e.g. "Costume loft – rack 3").' });
+      if (store.locations.find((l) => l.name.toLowerCase() === name.toLowerCase())) return sendJson(res, 409, { error: 'There is already a location called ' + name + '.' });
+      let n = store.settings.next_loc; while (findLoc('L-' + pad(n, 3))) n++;
+      store.settings.next_loc = n + 1;
+      const loc = { code: 'L-' + pad(n, 3), name, area: s(b.area, 80), notes: s(b.notes, 400), created_at: new Date().toISOString(), created_by: by };
+      store.locations.push(loc); save(); broadcast({ t: 'loc', loc });
+      return sendJson(res, 200, { ok: true, loc });
+    }
+    const lm = p.match(/^\/api\/locations\/(L-\d+)$/i);
+    if (lm) {
+      const loc = findLoc(lm[1].toUpperCase()); if (!loc) return sendJson(res, 404, { error: 'No such location.' });
+      if (method === 'PATCH') {
+        const b = await readBody(req);
+        if (b.name != null && s(b.name, 80)) loc.name = s(b.name, 80);
+        if (b.area != null) loc.area = s(b.area, 80);
+        if (b.notes != null) loc.notes = s(b.notes, 400);
+        save(); broadcast({ t: 'loc', loc }); return sendJson(res, 200, { ok: true, loc });
+      }
+      if (method === 'DELETE') {
+        if (!isAdmin) return sendJson(res, 403, { error: 'Needs the admin code.' });
+        if (store.items.some((i) => i.location === loc.code)) return sendJson(res, 409, { error: 'Move the items out of ' + loc.name + ' first.' });
+        store.locations = store.locations.filter((l) => l !== loc); save(); broadcast({ t: 'reload' });
+        return sendJson(res, 200, { ok: true });
+      }
+    }
+
+    // Reserve a run of blank label codes for pre-printing
+    if (method === 'POST' && p === '/api/reserve') {
+      const b = await readBody(req); const count = num(b.count, 1, 1000, 30);
+      let start = store.settings.next_num; while (findItem(store.settings.prefix + '-' + pad(start, 4))) start++;
+      store.settings.next_num = start + count; save(); broadcast({ t: 'settings' });
+      return sendJson(res, 200, { ok: true, from: store.settings.prefix + '-' + pad(start, 4), count });
+    }
+
+    // ── Admin ──
+    if (!isAdmin && (p === '/api/restore' || p === '/api/settings' || p === '/api/import' || p === '/api/forget'))
+      return sendJson(res, 403, { error: 'That needs the admin code.' });
+
+    if (method === 'POST' && p === '/api/restore') {
+      const b = await readBody(req); const code = s(b.code, 16).toUpperCase();
+      const it = store.removed.find((i) => i.code === code);
+      if (!it) return sendJson(res, 404, { error: 'Not in the removed list.' });
+      if (findItem(code)) return sendJson(res, 409, { error: code + ' is in use again.' });
+      store.removed = store.removed.filter((i) => i !== it); delete it.removed_at; delete it.removed_by;
+      log(it, by, 'Restored', ''); store.items.push(it); save(); broadcast({ t: 'item', item: itemOut(it) });
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST' && p === '/api/settings') {
+      const b = await readBody(req); const st = store.settings;
+      if (b.title != null && s(b.title, 80)) st.title = s(b.title, 80);
+      if (b.org != null && s(b.org, 80)) st.org = s(b.org, 80);
+      if (Array.isArray(b.categories)) {
+        const c = [...new Set(b.categories.map((x) => s(x, 60)).filter(Boolean))].slice(0, 40);
+        if (c.length) st.categories = c.includes('Other') ? c : c.concat('Other');
+      }
+      if (b.crew_key != null) { const k = s(b.crew_key, 40).toUpperCase(); if (k.length < 6) return sendJson(res, 400, { error: 'Crew code: at least 6 characters.' }); st.crew_key = k; st.crew_key_rotated = true; }
+      if (b.admin_key != null) { const k = s(b.admin_key, 40).toUpperCase(); if (k.length < 8) return sendJson(res, 400, { error: 'Admin code: at least 8 characters.' }); st.admin_key = k; st.admin_key_rotated = true; setKeyCookie(res, k); }
+      if (st.crew_key === st.admin_key) return sendJson(res, 400, { error: 'Crew and admin codes must differ.' });
+      save(); broadcast({ t: 'settings' }); return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST' && p === '/api/forget') { store.removed = []; save(); return sendJson(res, 200, { ok: true }); }
+    if (method === 'POST' && p === '/api/import') {
+      // rows: [{name, category, qty, location (name), color, size, …}] parsed client-side from CSV
+      const b = await readBody(req, 4 * 1024 * 1024);
+      if (!Array.isArray(b.rows)) return sendJson(res, 400, { error: 'Nothing to import.' });
+      let added = 0, locsMade = 0; const now = new Date().toISOString();
+      for (const row of b.rows.slice(0, 5000)) {
+        const name = s(row.name, 120); if (!name) continue;
+        let locCode = '';
+        const ln = s(row.location, 80);
+        if (ln) {
+          let loc = store.locations.find((l) => l.name.toLowerCase() === ln.toLowerCase() || l.code === ln.toUpperCase());
+          if (!loc) { let n = store.settings.next_loc; while (findLoc('L-' + pad(n, 3))) n++; store.settings.next_loc = n + 1;
+            loc = { code: 'L-' + pad(n, 3), name: ln, area: '', notes: '', created_at: now, created_by: by }; store.locations.push(loc); locsMade++; }
+          locCode = loc.code;
+        }
+        let code = s(row.code, 16).toUpperCase();
+        if (!CODE_RE.test(code) || findItem(code)) code = nextCode(); else bumpPastCode(code);
+        const item = { code, name, category: 'Other', qty: 1, status: 'Available', condition: '', location: '', sublocation: '', color: '', size: '', period: '', tags: '',
+          value: null, description: '', notes: '', holder: '', show: '', due: '', photos: [], history: [], created_at: now, created_by: by, updated_at: now, updated_by: by, last_seen: '' };
+        const cat = s(row.category, 60);
+        applyFields(item, Object.assign({}, row, { location: locCode, category: store.settings.categories.find((c) => c.toLowerCase() === cat.toLowerCase()) || (cat ? cat : 'Other') }));
+        if (!store.settings.categories.includes(item.category)) store.settings.categories.splice(store.settings.categories.length - 1, 0, item.category);
+        log(item, by, 'Imported', ''); store.items.push(item); added++;
+      }
+      save(); broadcast({ t: 'reload' });
+      return sendJson(res, 200, { ok: true, added, locations: locsMade });
+    }
+
+    return sendJson(res, 404, { error: 'Not found' });
+  } catch (e) {
+    if (e.message === 'too big') return sendJson(res, 413, { error: 'That was too large.' });
+    console.error(e);
+    sendJson(res, e.status || 500, { error: 'Something went wrong. Try again.' });
+  }
+});
+
+process.on('SIGTERM', () => {
+  Promise.resolve(pushBackup(true)).finally(() => process.exit(0));
+  setTimeout(() => process.exit(0), 4000).unref();
+});
+
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log('Rialto Inventory on http://localhost:' + PORT);
+    console.log('  crew code : ' + store.settings.crew_key);
+    console.log('  admin code: ' + store.settings.admin_key);
+    restoreFromBackup();
+  });
+}
+module.exports = { server, _store: () => store };

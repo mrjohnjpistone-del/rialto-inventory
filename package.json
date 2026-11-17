@@ -1,0 +1,9 @@
+{
+  "name": "rialto-inventory",
+  "version": "1.0.0",
+  "private": true,
+  "description": "QR-code inventory for the Rialto: phones are the scanners, stickers are the labels. Zero dependencies.",
+  "main": "server.js",
+  "scripts": { "start": "node server.js", "test": "node test.js" },
+  "engines": { "node": ">=18" }
+}

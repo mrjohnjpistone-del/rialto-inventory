@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: rialto-inventory
+    runtime: node
+    plan: free
+    buildCommand: ""
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      # Free plan = no disk. Data + photos are mirrored to the audition service's paid disk.
+      - key: CREW_KEY
+        sync: false
+      - key: ADMIN_KEY
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
+      - key: BACKUP_URL        # https://audition-signin.onrender.com/api/blob/rialto-inventory
+        sync: false
+      - key: BACKUP_FILES_URL  # https://audition-signin.onrender.com/api/file
+        sync: false
+      - key: BACKUP_KEY        # the audition service's BLOB_KEY
+        sync: false
