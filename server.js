@@ -79,6 +79,7 @@ function freshStore() {
     items: [],
     locations: [],
     removed: [],
+    pending_photos: [],
   };
 }
 
@@ -97,6 +98,7 @@ function normalize(d) {
     items: Array.isArray(d && d.items) ? d.items : [],
     locations: Array.isArray(d && d.locations) ? d.locations : [],
     removed: Array.isArray(d && d.removed) ? d.removed : [],
+    pending_photos: Array.isArray(d && d.pending_photos) ? d.pending_photos : [],
   };
   if (!Array.isArray(out.settings.categories) || !out.settings.categories.length)
     out.settings.categories = DEFAULT_CATEGORIES.slice();
@@ -127,7 +129,7 @@ function save() {
 // ── Off-box mirror (same rules as afgm-materials) ────────────────────────────
 const MIRRORED  = Boolean(BACKUP_URL && BACKUP_KEY);
 let restoreDone = !MIRRORED || hadLocalFile;
-let pushWaiting = false, pushTimer = null, restoreTry = 0;
+let pushWaiting = false, pushTimer = null, restoreTry = 0, pushRetry = null;
 
 function pushBackup(now) {
   if (!MIRRORED) return;
@@ -139,8 +141,12 @@ function pushBackup(now) {
       method: 'PUT',
       headers: { 'x-staff-key': BACKUP_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify(store),
-    }).then((r) => { if (!r.ok) console.error('backup push answered', r.status); })
-      .catch((e) => console.error('backup push failed:', e.message));
+    }).then((r) => { if (!r.ok) throw new Error('answered ' + r.status); retryPendingPhotos(); })
+      .catch((e) => {
+        console.error('backup push failed:', e.message);
+        // Keep trying until it lands: a failed push must never be the last word.
+        if (!pushRetry) pushRetry = setTimeout(() => { pushRetry = null; pushBackup(); }, 30000);
+      });
   };
   if (now) return send();
   pushTimer = setTimeout(send, 2000);
@@ -155,12 +161,14 @@ async function restoreFromBackup() {
     else {
       const d = await r.json();
       if (!d || !Array.isArray(d.items)) throw new Error('mirror held nothing usable');
-      if (writes) console.log('skipped restore — already written to on this boot');
-      else { store = normalize(d); console.log('restored ' + store.items.length + ' items from the mirror'); }
+      // Nothing can be written before this point (every /api/ call answers 503 until the
+      // restore is done), so the mirror's copy is always the one to load.
+      store = normalize(d); console.log('restored ' + store.items.length + ' items from the mirror');
     }
     restoreDone = true;
-    if (!hadLocalFile && !writes) save();
+    if (!hadLocalFile) save();
     if (pushWaiting) { pushWaiting = false; pushBackup(); }
+    retryPendingPhotos();
     broadcast({ t: 'reload' });
   } catch (e) {
     restoreTry++;
@@ -169,16 +177,30 @@ async function restoreFromBackup() {
   }
 }
 
+// Photos not yet confirmed on the mirror are listed in store.pending_photos (itself
+// mirrored) and retried after every successful data push and at boot, so a photo
+// taken while the mirror service is redeploying is never lost.
 function mirrorPhoto(name, buf) {
   if (!BACKUP_FILES_URL || !BACKUP_KEY) return Promise.resolve();
-  const go = (n) => fetch(BACKUP_FILES_URL + '/' + name, {
+  if (!store.pending_photos.includes(name)) store.pending_photos.push(name);
+  return fetch(BACKUP_FILES_URL + '/' + name, {
     method: 'PUT', headers: { 'x-staff-key': BACKUP_KEY, 'Content-Type': 'image/jpeg' }, body: buf,
-  }).then((r) => { if (!r.ok) throw new Error('answered ' + r.status); })
-    .catch((e) => {
-      if (n < 4) return new Promise((ok) => setTimeout(ok, 3000 * (n + 1))).then(() => go(n + 1));
-      console.error('photo mirror failed for ' + name + ':', e.message);
-    });
-  return go(0);
+  }).then((r) => {
+    if (!r.ok) throw new Error('answered ' + r.status);
+    store.pending_photos = store.pending_photos.filter((n) => n !== name);
+  }).catch((e) => console.error('photo mirror failed for ' + name + ' (will retry):', e.message));
+}
+let photoRetrying = false;
+function retryPendingPhotos() {
+  if (photoRetrying || !store.pending_photos.length || !BACKUP_FILES_URL || !restoreDone) return;
+  photoRetrying = true;
+  const before = store.pending_photos.length;
+  Promise.all(store.pending_photos.slice().map((name) => {
+    let buf;
+    try { buf = fs.readFileSync(path.join(PHOTO_DIR, name.replace(/^rinv-/, '') + '.jpg')); }
+    catch (e) { store.pending_photos = store.pending_photos.filter((n) => n !== name); return null; } // local copy gone
+    return mirrorPhoto(name, buf);
+  })).finally(() => { photoRetrying = false; if (store.pending_photos.length !== before) save(); });
 }
 async function fetchMirroredPhoto(name) {
   if (!BACKUP_FILES_URL || !BACKUP_KEY) return null;
@@ -204,7 +226,8 @@ function money(v) { const n = Number(String(v || '').replace(/[$,\s]/g, '')); re
 function esc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function clientIp(req) {
   const xf = req.headers['x-forwarded-for'];
-  return (xf ? String(xf).split(',')[0].trim() : '') || req.socket.remoteAddress || 'unknown';
+  // Rightmost entry = the address Render's own proxy saw; leftmost entries are client-controlled.
+  return (xf ? String(xf).split(',').pop().trim() : '') || req.socket.remoteAddress || 'unknown';
 }
 function sendJson(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -256,8 +279,11 @@ function who(req) { return s(decodeURIComponent(req.headers['x-user'] || ''), 60
 const loginFails = new Map();
 function loginBlocked(ip) {
   const now = Date.now(); const a = (loginFails.get(ip) || []).filter((t) => now - t < 15 * 60 * 1000);
-  loginFails.set(ip, a); return a.length >= 12;
+  if (a.length) loginFails.set(ip, a); else loginFails.delete(ip);
+  return a.length >= 12;
 }
+function loginFailed(ip) { const a = loginFails.get(ip) || []; a.push(Date.now()); loginFails.set(ip, a); }
+setInterval(() => { for (const ip of [...loginFails.keys()]) loginBlocked(ip); }, 10 * 60 * 1000).unref();
 
 // ── Items ────────────────────────────────────────────────────────────────────
 function findItem(code) { return store.items.find((i) => i.code === code); }
@@ -354,7 +380,7 @@ function printPage(req, url) {
     const [p, n0] = from.toUpperCase().split('-'); const start = Number(n0) || 1;
     codes = []; for (let i = 0; i < count; i++) codes.push(p + '-' + pad(start + i, kind === 'locations' ? 3 : 4));
   }
-  codes = codes.filter((c) => CODE_RE.test(c) || LOC_RE.test(c)).slice(0, 1000);
+  codes = codes.filter((c) => CODE_RE.test(c) || LOC_RE.test(c)).slice(0, 5000);
   const copies = num(url.searchParams.get('copies'), 1, 10, 1);
   const labels = [];
   for (const c of codes) {
@@ -384,13 +410,16 @@ function printPage(req, url) {
       '.lab{width:' + W + 'in;height:' + H + 'in}';
     const per = sh.cols * sh.rows;
     let html = ''; for (let i = 0; i < labs.length; i += per) html += '<div class="sheet">' + labs.slice(i, i + per).join('') + '</div>';
-    return sendPrint(labels.length, sizeKey, pageCss, html);
+    return sendPrint(labels.length, sizeKey, pageCss, html, url);
   }
   const pageCss = '@page{size:' + W.toFixed(3) + 'in ' + H.toFixed(3) + 'in;margin:0}' +
     '.lab{width:' + W.toFixed(3) + 'in;height:' + H.toFixed(3) + 'in;page-break-after:always;break-after:page}';
-  return sendPrint(labels.length, sizeKey, pageCss, labs.join(''));
+  return sendPrint(labels.length, sizeKey, pageCss, labs.join(''), url);
 }
-function sendPrint(n, sizeKey, pageCss, body) {
+function sendPrint(n, sizeKey, pageCss, body, url) {
+  // Re-post the same selection when the size changes (code lists can be too long for an address).
+  const keep = ['codes', 'kind', 'from', 'count', 'names', 'copies'].filter((k) => url.searchParams.get(k))
+    .map((k) => '<input type="hidden" name="' + k + '" value="' + esc(url.searchParams.get(k)) + '">').join('');
   const opts = Object.entries(SIZES).map(([k, v]) => '<option value="' + k + '"' + (k === sizeKey ? ' selected' : '') + '>' + esc(v.name) + '</option>').join('');
   return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Print labels</title><style>' +
     'html,body{margin:0;background:#fff;color:#000;font-family:Arial,Helvetica,sans-serif}' + pageCss +
@@ -404,7 +433,7 @@ function sendPrint(n, sizeKey, pageCss, body) {
     '.bar button,.bar select{font-size:16px;padding:8px 12px}.bar b{margin-right:auto}' +
     '@media print{.bar{display:none}}' +
     '</style></head><body><div class="bar"><b>' + n + ' label' + (n === 1 ? '' : 's') + '</b>' +
-    '<label>Size <select onchange="var u=new URL(location.href);u.searchParams.set(\'size\',this.value);location.href=u">' + opts + '</select></label>' +
+    '<form method="post" action="/print" style="display:inline">' + keep + '<label>Size <select name="size" onchange="this.form.submit()">' + opts + '</select></label></form>' +
     '<button onclick="window.print()">Print</button><button onclick="history.length>1?history.back():location.href=\'/labels\'">Back</button></div>' +
     body + '</body></html>';
 }
@@ -446,10 +475,14 @@ const server = http.createServer(async (req, res) => {
 
     // Sign-in
     if (method === 'GET' && p === '/join') {
-      const k = s(url.searchParams.get('k'), 80);
-      if (k === store.settings.crew_key || k === store.settings.admin_key) {
-        setKeyCookie(res, k); res.writeHead(302, { Location: '/?welcome=1' }); return res.end();
+      const k = s(url.searchParams.get('k'), 80).toUpperCase();
+      const jip = clientIp(req);
+      if (loginBlocked(jip)) return sendHtml(res, loginPage('Too many tries. Wait 15 minutes.'), 429);
+      if (k && (k === store.settings.crew_key.toUpperCase() || k === store.settings.admin_key.toUpperCase())) {
+        setKeyCookie(res, k === store.settings.admin_key.toUpperCase() ? store.settings.admin_key : store.settings.crew_key);
+        res.writeHead(302, { Location: '/?welcome=1' }); return res.end();
       }
+      loginFailed(jip);
       return sendHtml(res, loginPage('That join link is out of date. Ask for the current crew code.'), 401);
     }
     if (method === 'POST' && (p === '/login' || p === '/api/login')) {
@@ -462,7 +495,7 @@ const server = http.createServer(async (req, res) => {
       } else { const b = await readBody(req); key = s(b.key, 80).toUpperCase(); }
       const ok = key && (key === store.settings.crew_key.toUpperCase() || key === store.settings.admin_key.toUpperCase());
       if (!ok) {
-        loginFails.get(ip) ? loginFails.get(ip).push(Date.now()) : loginFails.set(ip, [Date.now()]);
+        loginFailed(ip);
         return p === '/login' ? sendHtml(res, loginPage('That code did not work. Check it and try again.'), 401) : sendJson(res, 401, { error: 'Wrong code.' });
       }
       const real = key === store.settings.admin_key.toUpperCase() ? store.settings.admin_key : store.settings.crew_key;
@@ -472,6 +505,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/logout') { res.setHeader('Set-Cookie', 'rk=; Path=/; Max-Age=0'); res.writeHead(302, { Location: '/' }); return res.end(); }
 
+    if (!restoreDone && (p.startsWith('/api/') || p.startsWith('/p/')))
+      return sendJson(res, 503, { error: 'Starting up. Try again in a few seconds.', starting: true });
     const r = role(req);
 
     // Pages
@@ -482,7 +517,14 @@ const server = http.createServer(async (req, res) => {
     if (method === 'GET' && (p === '/app.js' || p.startsWith('/vendor/'))) {
       if (serveStatic(res, p.slice(1))) return;
     }
-    if (method === 'GET' && p === '/print') { if (!r) return sendHtml(res, loginPage('')); return sendHtml(res, printPage(req, url)); }
+    if (p === '/print' && (method === 'GET' || method === 'POST')) {
+      if (!r) return sendHtml(res, loginPage(''));
+      if (method === 'POST') { // long code lists arrive in a form body, not the address
+        const f = new URLSearchParams(await readText(req, 512 * 1024));
+        for (const [k, v] of f) url.searchParams.set(k, v);
+      }
+      return sendHtml(res, printPage(req, url));
+    }
     if (method === 'GET' && p === '/poster') { if (r !== 'admin') return sendHtml(res, loginPage('The poster needs the admin code.')); return sendHtml(res, posterPage(req)); }
 
     // Photos
@@ -527,7 +569,7 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'GET' && p === '/api/export.csv') {
       const cols = ['code', 'name', 'category', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'period', 'tags', 'value', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
-      const q = (v) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+      const q = (v) => { let t = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
       const base = baseUrl(req);
       const rows = store.items.map((i) => cols.map((c) => c === 'location_name' ? ((findLoc(i.location) || {}).name || '') :
         c === 'photos' ? i.photos.map((x) => base + '/p/' + x + '.jpg').join(' ') : i[c]).map(q).join(','));
@@ -589,6 +631,8 @@ const server = http.createServer(async (req, res) => {
         const b = await readBody(req);
         const a = s(b.action, 20); const now = new Date().toISOString();
         if (a === 'checkout') {
+          if (item.status === 'Checked out' || item.status === 'In a show')
+            return sendJson(res, 409, { error: 'Already with ' + (item.holder || 'someone') + '. Check it in first.', item: itemOut(item) });
           const holder = s(b.holder, 80); if (!holder) return sendJson(res, 400, { error: 'Who is taking it?' });
           item.holder = holder; item.show = s(b.show, 120); item.due = s(b.due, 20);
           item.status = b.in_show ? 'In a show' : 'Checked out';

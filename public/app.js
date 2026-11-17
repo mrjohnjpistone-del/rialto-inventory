@@ -18,7 +18,12 @@
     const opt = { method, headers: { 'x-rialto': '1', 'x-user': encodeURIComponent(LS.get('name', '') || '') } };
     if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
     let r;
-    try { r = await fetch(url, opt); } catch (e) { throw new Error('No connection. Check your signal and try again.'); }
+    for (let tries = 0; ; tries++) {
+      try { r = await fetch(url, opt); } catch (e) { throw new Error('No connection. Check your signal and try again.'); }
+      if (r.status !== 503 || tries >= 20) break;
+      if (tries === 0 && view && !D) view.innerHTML = '<div class="card"><p>Waking up the inventory… this takes a few seconds.</p></div>';
+      await new Promise((ok) => setTimeout(ok, 3000));
+    }
     if (r.status === 401) { location.href = '/'; throw new Error('Signed out'); }
     const j = await r.json().catch(() => ({}));
     if (!r.ok) { const er = new Error(j.error || 'Something went wrong.'); er.status = r.status; er.data = j; throw er; }
@@ -32,11 +37,15 @@
 
   // ── Live updates ───────────────────────────────────────────────────────────
   function live() {
-    let es;
+    let es, opened = false;
     const dot = $('#live');
     const open = () => {
       es = new EventSource('/api/events');
-      es.onopen = () => { dot.classList.remove('off'); dot.title = 'Live — changes appear instantly'; };
+      es.onopen = () => {
+        dot.classList.remove('off'); dot.title = 'Live — changes appear instantly';
+        if (opened) load().then(() => { if (!editing && !scanner && !typing()) render(true); }).catch(() => {});
+        opened = true;
+      };
       es.onerror = () => { dot.classList.add('off'); dot.title = 'Reconnecting…'; };
       es.onmessage = async (ev) => {
         let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
@@ -44,11 +53,16 @@
         else if (m.t === 'del') D.items = D.items.filter((x) => x.code !== m.code);
         else if (m.t === 'loc') { const i = D.locations.findIndex((x) => x.code === m.loc.code); if (i >= 0) D.locations[i] = m.loc; else D.locations.push(m.loc); }
         else if (m.t === 'reload' || m.t === 'settings') await load();
-        if (!editing && !scanner) render(true);
+        if (!editing && !scanner && !typing()) render(true);
       };
     };
     open();
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && es && es.readyState === 2) { open(); load().then(() => render(true)); } });
+  }
+
+  function typing() {
+    const ae = document.activeElement;
+    return !!(ae && (view.contains(ae) || ae.closest('.modal')) && /INPUT|TEXTAREA|SELECT/.test(ae.tagName)) || !!$('.modal');
   }
 
   // ── UI helpers ─────────────────────────────────────────────────────────────
@@ -266,7 +280,7 @@
   }
   async function act(code, body, msg) {
     try { const r = await api('POST', '/api/items/' + code + '/action', body); upsert(r.item); toast(msg, 'good'); render(true); return r.item; }
-    catch (e) { toast(e.message, 'bad'); }
+    catch (e) { if (e.data && e.data.item) { upsert(e.data.item); render(true); } toast(e.message, 'bad'); }
   }
   function checkout(it) {
     const recent = LS.get('holders', []);
@@ -347,7 +361,7 @@
     const sticky = LS.get('sticky', {});
     v = Object.assign({ category: sticky.category || '', location: sticky.location || '', qty: 1, condition: '' }, v || {});
     return '<label>What is it? *<input id="f_name" required maxlength="120" placeholder="e.g. Red velvet Victorian gown" value="' + esc(v.name || '') + '"></label>' +
-      '<div class="grid2"><label>Category<select id="f_category">' + opts(D.settings.categories, v.category, 'Pick one') + '</select></label>' +
+      '<div class="grid2"><label>Category<select id="f_category">' + opts(v.category && !D.settings.categories.includes(v.category) ? D.settings.categories.concat(v.category) : D.settings.categories, v.category, 'Pick one') + '</select></label>' +
       '<label>How many<input id="f_qty" type="number" inputmode="numeric" min="0" value="' + esc(v.qty) + '"></label></div>' +
       '<label>Place<select id="f_location">' + locOpts(v.location) + '</select></label>' +
       '<details' + (v.color || v.size || v.period || v.notes || v.description || v.tags || v.value || v.condition || v.sublocation ? ' open' : '') + '><summary style="font-weight:700;margin:4px 0 12px;cursor:pointer">More details (optional)</summary>' +
@@ -476,13 +490,15 @@
   function audit(code) {
     const l = loc(code); if (!l) return locPage(code);
     const key = 'audit_' + code;
-    const st = LS.get(key, { started: new Date().toISOString(), seen: [] });
+    let st = LS.get(key, null);
+    if (!st || Date.now() - new Date(st.started).getTime() > 12 * 3600 * 1000) st = { started: new Date().toISOString(), seen: [] };
     LS.set(key, st);
-    const expected = D.items.filter((i) => i.location === code && i.status !== 'Retired' && i.status !== 'Checked out');
+    const expected = D.items.filter((i) => i.location === code && !['Retired', 'Checked out', 'In a show', 'Missing'].includes(i.status));
     const seen = new Set(st.seen);
     const notSeen = expected.filter((i) => !seen.has(i.code));
     const extra = st.seen.filter((c) => !expected.find((i) => i.code === c));
     view.innerHTML = '<span class="code muted">AUDIT · ' + esc(code) + '</span><h1>' + esc(l.name) + '</h1>' +
+      '<p class="muted small">Started ' + esc(when(st.started)) + (st.seen.length ? ' · <a href="#" id="restart">Start over</a>' : '') + '</p>' +
       '<div class="card"><div class="stats"><div><b class="audit-ok">' + (expected.length - notSeen.length) + '</b><span>Found</span></div><div><b class="audit-miss">' + notSeen.length + '</b><span>Not scanned yet</span></div><div><b>' + extra.length + '</b><span>Moved here</span></div></div></div>' +
       '<button class="btn big" id="go">⌗ Scan items on this shelf</button>' +
       '<div class="sect"><h2>Not scanned yet</h2></div><div class="list">' + notSeen.map((i) => rowHtml(i)).join('') + '</div>' + (notSeen.length ? '' : '<div class="card empty">Everything recorded here has been found. ✓</div>') +
@@ -496,6 +512,7 @@
       localStorage.removeItem('rinv_' + key); toast('Audit finished', 'good'); go('/l/' + code);
     };
     $('#done').onclick = () => { localStorage.removeItem('rinv_' + key); go('/l/' + code); };
+    if ($('#restart')) $('#restart').onclick = (e) => { e.preventDefault(); localStorage.removeItem('rinv_' + key); render(); };
   }
 
   // ── Scanner (camera inside the app; works on iPhone and Android) ───────────
@@ -593,12 +610,11 @@
   // ── Labels ─────────────────────────────────────────────────────────────────
   function printCodes(codes, kind) {
     const size = LS.get('labelSize', '2x1');
-    const u = '/print?size=' + encodeURIComponent(size) + '&kind=' + (kind || 'items') + '&codes=' + encodeURIComponent(codes.join(','));
-    if (u.length > 7000) { // very long lists: print as a range instead
-      const nums = codes.map((c) => Number(c.split('-')[1])).sort((a, b) => a - b);
-      location.href = '/print?size=' + size + '&from=' + encodeURIComponent(codes[0].split('-')[0] + '-' + nums[0]) + '&count=' + (nums[nums.length - 1] - nums[0] + 1); return;
-    }
-    location.href = u;
+    const f = document.createElement('form'); f.method = 'post'; f.action = '/print';
+    [['size', size], ['kind', kind || 'items'], ['codes', codes.join(',')]].forEach(([n, v]) => {
+      const i = document.createElement('input'); i.type = 'hidden'; i.name = n; i.value = v; f.appendChild(i);
+    });
+    document.body.appendChild(f); f.submit();
   }
   function savePng(it) {
     const q = qrcode(0, 'M'); q.addData(D.base + '/i/' + it.code); q.make();
@@ -639,7 +655,7 @@
       catch (er) { toast(er.message, 'bad'); }
     };
     $('#lp').onclick = () => {
-      const cat = $('#lc').value, d = $('#ld').value; const since = d === 'all' ? '' : new Date(Date.now() - (d === 'today' ? 0 : 7) * 864e5).toISOString().slice(0, 10);
+      const cat = $('#lc').value, d = $('#ld').value; const since = d === 'all' ? '' : new Date(new Date().setHours(0, 0, 0, 0) - (d === '7' ? 6 : 0) * 864e5).toISOString();
       const c = D.items.filter((i) => (!cat || i.category === cat) && (!since || (i.created_at || '') >= since)).map((i) => i.code);
       if (!c.length) return toast('No items match.'); printCodes(c);
     };

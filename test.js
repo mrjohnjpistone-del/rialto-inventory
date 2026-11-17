@@ -31,7 +31,7 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
 
 (async () => {
   const audDir = path.join(tmp, 'aud'), invDir = path.join(tmp, 'inv');
-  const aud = start(AUD, { PORT: AUD_PORT, DATA_DIR: audDir, BLOB_KEY: BLOB, STAFF_KEY: 'x', WARM_URLS: '' });
+  let aud = start(AUD, { PORT: AUD_PORT, DATA_DIR: audDir, BLOB_KEY: BLOB, STAFF_KEY: 'x', WARM_URLS: '' });
   await up('http://localhost:' + AUD_PORT + '/health');
   let inv = start(__dirname, invEnv(invDir));
   await up(INV + '/health');
@@ -109,6 +109,33 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     ok(r.s === 200 && r.j.items.length === 5, 'items restored from mirror after wipe: ' + (r.j && r.j.items.length));
     r = await fetch(INV + '/p/' + pid + '.jpg', { headers: { cookie } }); ok(r.status === 200, 'photo restored from mirror after wipe');
     r = await call('POST', '/api/items', { name: 'After restart' }); ok(r.j.item.code === 'R-0055', 'numbering continues after restore: ' + r.j.item.code);
+
+    // ── Review fixes ──
+    r = await call('POST', '/api/items/R-0001/action', { action: 'checkout', holder: 'Ann' }); ok(r.s === 200, 'checkout once');
+    r = await call('POST', '/api/items/R-0001/action', { action: 'checkout', holder: 'Bob' });
+    ok(r.s === 409 && /Ann/.test(r.j.error) && r.j.item.holder === 'Ann', 'double checkout refused, holder kept');
+    await call('POST', '/api/items/R-0001/action', { action: 'checkin' });
+    r = await call('POST', '/api/items', { name: '=HYPERLINK("http://x","y")' });
+    r = await call('GET', '/api/export.csv'); ok(r.t.includes(`"'=HYPERLINK`), 'csv neutralises formulas');
+    const many = []; for (let i = 1; i <= 1200; i++) many.push('R-' + String(i).padStart(4, '0'));
+    r = await fetch(INV + '/print', { method: 'POST', headers: { cookie, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'size=2x1&codes=' + many.join(',') });
+    let tx = await r.text(); ok((tx.match(/class="lab/g) || []).length === 1200 && tx.includes('name="codes"'), 'POST print of 1200 exact codes, size switch keeps them');
+    for (let i = 0; i < 12; i++) await fetch(INV + '/join?k=NOPE' + i, { redirect: 'manual', headers: { 'x-forwarded-for': '9.9.9.' + i + ', 7.7.7.7' } });
+    r = await fetch(INV + '/join?k=CREW-TEST', { redirect: 'manual', headers: { 'x-forwarded-for': '1.2.3.4, 7.7.7.7' } });
+    ok(r.status === 429, 'join guesses limited by real (rightmost) IP, spoofed left entries ignored');
+
+    // Mirror down at boot: no writes until the restore lands, then the full copy loads.
+    await wait(2600);
+    inv.kill('SIGTERM'); await wait(800);
+    fs.rmSync(invDir, { recursive: true, force: true });
+    aud.kill(); await wait(500);
+    inv = start(__dirname, invEnv(invDir)); await up(INV + '/health');
+    r = await call('GET', '/api/data'); ok(r.s === 503, 'api answers 503 while restore is pending');
+    r = await call('POST', '/api/items', { name: 'Should not land' }); ok(r.s === 503, 'writes refused while restore is pending');
+    aud = start(AUD, { PORT: AUD_PORT, DATA_DIR: audDir, BLOB_KEY: BLOB, STAFF_KEY: 'x', WARM_URLS: '' });
+    await up('http://localhost:' + AUD_PORT + '/health');
+    for (let i = 0; i < 40 && r.s === 503; i++) { await wait(1000); r = await call('GET', '/api/data'); }
+    ok(r.s === 200 && r.j.items.length === 7 && !r.j.items.some((i) => i.name === 'Should not land'), 'full inventory restored after mirror came back: ' + (r.j && r.j.items.length));
   } catch (e) { fails++; console.log('ERROR', e); console.log(inv.out); }
   inv.kill(); aud.kill();
   console.log(passes + ' passed, ' + fails + ' failed');
