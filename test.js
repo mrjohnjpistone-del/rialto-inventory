@@ -124,6 +124,17 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     r = await fetch(INV + '/join?k=CREW-TEST', { redirect: 'manual', headers: { 'x-forwarded-for': '1.2.3.4, 7.7.7.7' } });
     ok(r.status === 429, 'join guesses limited by real (rightmost) IP, spoofed left entries ignored');
 
+    // Copies: each gets its own sticker number, details carry over, status/holder/history do not
+    await call('PATCH', '/api/items/R-0001', { name: 'USMC Alpha coat', size: '38S', description: 'Green, corporal' });
+    await call('POST', '/api/items/R-0001/action', { action: 'checkout', holder: 'Ann' });
+    r = await call('POST', '/api/items/R-0001/copies', { count: 39, photo: true });
+    const cs = r.j.items || []; const codesSet = new Set(cs.map((c) => c.code));
+    ok(r.s === 200 && cs.length === 39 && codesSet.size === 39 && !codesSet.has('R-0001'), '39 copies, 39 unique codes');
+    ok(cs.every((c) => c.size === '38S' && c.name === 'USMC Alpha coat' && c.status === 'Available' && !c.holder && c.photos.length === 1 && c.history.length === 1), 'copies carry details + photo, not status/holder/history');
+    r = await call('GET', '/api/data'); ok(r.j.items.filter((i) => i.size === '38S').length === 40, '40 coats searchable by 38S');
+    r = await call('POST', '/api/items', { name: 'USMC Alpha coat', size: '38S', code: cs[0].code }); ok(r.s === 409, 'copied coat sticker cannot be reused');
+    await call('POST', '/api/items/R-0001/action', { action: 'checkin' });
+
     // Mirror down at boot: no writes until the restore lands, then the full copy loads.
     await wait(2600);
     inv.kill('SIGTERM'); await wait(800);
@@ -135,7 +146,7 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     aud = start(AUD, { PORT: AUD_PORT, DATA_DIR: audDir, BLOB_KEY: BLOB, STAFF_KEY: 'x', WARM_URLS: '' });
     await up('http://localhost:' + AUD_PORT + '/health');
     for (let i = 0; i < 40 && r.s === 503; i++) { await wait(1000); r = await call('GET', '/api/data'); }
-    ok(r.s === 200 && r.j.items.length === 7 && !r.j.items.some((i) => i.name === 'Should not land'), 'full inventory restored after mirror came back: ' + (r.j && r.j.items.length));
+    ok(r.s === 200 && r.j.items.length === 46 && !r.j.items.some((i) => i.name === 'Should not land'), 'full inventory restored after mirror came back: ' + (r.j && r.j.items.length));
   } catch (e) { fails++; console.log('ERROR', e); console.log(inv.out); }
   inv.kill(); aud.kill();
   console.log(passes + ' passed, ' + fails + ' failed');

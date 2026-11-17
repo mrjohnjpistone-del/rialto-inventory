@@ -129,7 +129,7 @@
     let m;
     if (p === '/') return home();
     if (p === '/browse') return browse(soft);
-    if (p === '/add') return addForm(new URLSearchParams(location.search).get('code') || '');
+    if (p === '/add') return addForm(new URLSearchParams(location.search).get('code') || '', false, copyOf());
     if (p === '/scan') { if (!soft) { history.replaceState(null, '', '/'); home(); openScanner({ mode: 'go' }); } return; }
     if (p === '/locations') return locations();
     if (p === '/labels') return labels();
@@ -224,12 +224,18 @@
     draw();
   }
 
+  // Fields that carry over when one item is copied to the next sticker (never photos, status or holder).
+  const COPY_FIELDS = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value'];
+  function copyOf() { const c = new URLSearchParams(location.search).get('copy'); return c ? item(c.toUpperCase()) : null; }
+
   // ── Item page ──────────────────────────────────────────────────────────────
   function itemPage(code) {
     const it = item(code);
     if (!it) {
-      view.innerHTML = '<div class="card"><h1>New sticker: <span class="code">' + esc(code) + '</span></h1><p>This sticker is not on anything yet. Fill in the item it is stuck to.</p></div>';
-      return addForm(code, true);
+      const src = copyOf();
+      view.innerHTML = '<div class="card"><h1>New sticker: <span class="code">' + esc(code) + '</span></h1><p>' +
+        (src ? 'Copying from <b>' + esc(src.name) + '</b> (' + esc(src.code) + '). Check the details, take this one\'s photo, and save.' : 'This sticker is not on anything yet. Fill in the item it is stuck to.') + '</p></div>';
+      return addForm(code, true, src);
     }
     const where = loc(it.location);
     view.innerHTML =
@@ -257,6 +263,8 @@
       '<dt>Last seen</dt><dd>' + esc(when(it.last_seen) || '—') + '</dd>' +
       '</dl><div class="row" style="margin-top:14px"><button class="btn alt" id="ed">Edit details</button>' +
       (it.status !== 'Missing' ? '<button class="btn alt" id="ms">Can\'t find it</button>' : '') + '</div></div>' +
+      '<div class="card"><h3>More just like this one?</h3><p class="muted small">Each copy gets its own sticker and QR code. Details carry over; take each one\'s own photo.</p>' +
+      '<div class="row"><button class="btn" id="cpy">⌗ Copy to next sticker</button><button class="btn alt" id="cpyN">Make several copies</button></div></div>' +
       '<div class="card"><div class="qrbox">' + qrSvg(D.base + '/i/' + it.code) + '<div><b>Sticker</b><p class="muted small" style="margin:.3em 0 .6em">Lost or damaged sticker? Print a new one.</p>' +
       '<div class="row"><button class="btn alt sm" id="pr">Print sticker</button><button class="btn alt sm" id="png">Save image</button></div></div></div></div>' +
       '<div class="card"><h3>History</h3><ul class="hist">' + it.history.map((h) => '<li><b>' + esc(h.action) + '</b>' + (h.detail ? ' — ' + esc(h.detail) : '') + '<br><span class="muted small">' + esc(h.by) + ' · ' + esc(when(h.at)) + '</span></li>').join('') + '</ul></div>' +
@@ -270,6 +278,8 @@
     if ($('#ci')) $('#ci').onclick = () => checkin(it);
     $('#mv').onclick = () => moveItem(it);
     $('#ed').onclick = () => editForm(it);
+    $('#cpy').onclick = () => copyToSticker(it);
+    $('#cpyN').onclick = () => makeCopies(it);
     if ($('#ms')) $('#ms').onclick = async () => { if (!confirm('Mark ' + it.name + ' as missing?')) return; await act(it.code, { action: 'missing' }, 'Marked missing'); };
     $('#pr').onclick = () => printCodes([it.code]);
     $('#png').onclick = () => savePng(it);
@@ -383,14 +393,15 @@
     });
     return o;
   }
-  function addForm(code, append) {
+  function addForm(code, append, src) {
     editing = true;
+    const pre = {}; if (src) COPY_FIELDS.forEach((k) => { if (src[k] != null && src[k] !== '') pre[k] = src[k]; });
     const html = '<form class="card" id="af">' + (append ? '' : '<h1>Add an item</h1>') +
       (code ? '<p class="muted">Sticker <span class="code">' + esc(code) + '</span> will be attached to this item.</p>'
         : '<p class="muted small">No sticker yet? It gets the next number and you can print its sticker after saving. Have blank stickers? Use <b>Scan</b> on one instead.</p>') +
       '<input type="file" id="aph" accept="image/*" capture="environment" hidden>' +
       '<div id="aprev" class="nophoto" style="cursor:pointer">📷 Tap to take a photo (recommended)</div>' +
-      fieldsHtml({}) +
+      fieldsHtml(pre) +
       '<label class="check"><input type="checkbox" id="keep"' + (LS.get('keepOn', true) ? ' checked' : '') + '> Keep category &amp; place for the next item</label>' +
       '<button class="btn big" id="sv">Save item</button></form>';
     if (append) view.insertAdjacentHTML('beforeend', html); else view.innerHTML = html;
@@ -409,7 +420,7 @@
       try {
         const r = await api('POST', '/api/items', b); upsert(r.item);
         if (photo) { try { const r2 = await api('POST', '/api/items/' + r.item.code + '/photos', photo); upsert(r2.item); } catch (er) { toast('Item saved, photo failed: ' + er.message, 'bad'); } }
-        editing = false; afterAdd(r.item, !code);
+        editing = false; afterAdd(r.item, !code, !!src);
       } catch (er) {
         $('#sv').disabled = false; $('#sv').textContent = 'Save item';
         if (er.status === 409 && er.data && er.data.code) { toast(er.message, 'bad'); } else toast(er.message, 'bad');
@@ -417,17 +428,42 @@
     };
     setTimeout(() => { const n = $('#f_name'); if (n && !('ontouchstart' in window)) n.focus(); }, 50);
   }
-  function afterAdd(it, needsLabel) {
+  function afterAdd(it, needsLabel, wasCopy) {
     history.replaceState(null, '', '/i/' + it.code); render();
     modal('<h2>Saved ✓</h2><p><b>' + esc(it.name) + '</b> is <span class="code">' + esc(it.code) + '</span>.</p>' +
       (needsLabel ? '<button class="btn big" id="pl">Print its sticker</button>' : '') +
-      '<button class="btn big" id="nx" style="margin-top:8px">⌗ Scan next blank sticker</button>' +
+      '<button class="btn ' + (wasCopy ? '' : 'alt ') + 'big" id="cp" style="margin-top:8px">⌗ Copy this to the next sticker</button>' +
+      '<button class="btn ' + (wasCopy ? 'alt ' : '') + 'big" id="nx" style="margin-top:8px">⌗ Scan next blank sticker (new item)</button>' +
       '<button class="btn alt big" id="na" style="margin-top:8px">Add another without a sticker</button>' +
       '<button class="btn alt big" data-close style="margin-top:8px">Done</button>',
     (m, close) => {
       if ($('#pl', m)) $('#pl', m).onclick = () => { close(); printCodes([it.code]); };
       $('#nx', m).onclick = () => { close(); openScanner({ mode: 'go' }); };
+      $('#cp', m).onclick = () => { close(); copyToSticker(it); };
       $('#na', m).onclick = () => { close(); go('/add'); };
+    });
+  }
+  function copyToSticker(it) {
+    openScanner({ mode: 'copy', from: it, prompt: 'Scan the BLANK sticker on the next one' });
+  }
+  function makeCopies(it) {
+    modal('<h2>Make copies of ' + esc(it.name) + '</h2><p class="muted">Each copy becomes its own item with its own sticker number and QR code. You print the stickers next, stick each one on, and scan it to add that one\'s photo.</p>' +
+      '<form id="mc"><label>How many more?<input id="mn" type="number" min="1" max="100" value="1" inputmode="numeric"></label>' +
+      (it.photos.length ? '<label class="check"><input type="checkbox" id="mp" checked> Show this photo on the copies until each gets its own</label>' : '') +
+      '<button class="btn big">Make copies</button><button type="button" class="btn alt big" data-close style="margin-top:8px">Cancel</button></form>',
+    (m, close) => {
+      $('#mc', m).onsubmit = async (e) => {
+        e.preventDefault(); const n = Number($('#mn', m).value) || 0; if (n < 1) return;
+        if (!confirm('Create ' + n + ' new item' + (n === 1 ? '' : 's') + ', each with its own sticker number?')) return;
+        try {
+          const r = await api('POST', '/api/items/' + it.code + '/copies', { count: n, photo: !!($('#mp', m) && $('#mp', m).checked) });
+          r.items.forEach(upsert); close();
+          modal('<h2>' + r.items.length + ' copies made ✓</h2><p>Stickers <span class="code">' + esc(r.items[0].code) + '</span>' + (r.items.length > 1 ? ' to <span class="code">' + esc(r.items[r.items.length - 1].code) + '</span>' : '') + '.</p>' +
+            '<button class="btn big" id="pp">Print their ' + r.items.length + ' sticker' + (r.items.length === 1 ? '' : 's') + '</button><button class="btn alt big" data-close style="margin-top:8px">Later</button>',
+          (m2, c2) => { $('#pp', m2).onclick = () => { c2(); printCodes(r.items.map((x) => x.code)); }; });
+          render(true);
+        } catch (er) { toast(er.message, 'bad'); }
+      };
     });
   }
   function editForm(it) {
@@ -534,13 +570,15 @@
     closeScanner();
     const el = document.createElement('div'); el.className = 'scanner';
     el.innerHTML = '<video playsinline muted autoplay></video><div class="frame"></div>' +
-      '<div class="hdr"><span>' + esc(o.mode === 'audit' ? 'Auditing ' + o.loc.name : o.mode === 'put' ? 'Putting into ' + o.loc.name : 'Scan') + '</span><button id="sx">' + (o.mode === 'go' || o.mode === 'pickLoc' ? 'Close' : 'Done') + '</button></div>' +
+      '<div class="hdr"><span>' + esc(o.mode === 'audit' ? 'Auditing ' + o.loc.name : o.mode === 'put' ? 'Putting into ' + o.loc.name : o.mode === 'copy' ? 'Copying ' + o.from.name : 'Scan') + '</span><button id="sx">' + (o.mode === 'go' || o.mode === 'pickLoc' ? 'Close' : 'Done') + '</button></div>' +
       '<div class="bar"><div class="log" id="slog"></div><p id="smsg">' + esc(o.prompt || 'Point at a sticker') + '</p>' +
+      (o.mode === 'copy' ? '<button class="btn alt sm" id="nostk" style="width:100%;margin-bottom:8px;color:#fff;border-color:rgba(255,255,255,.5)">No blank sticker? Use the next number</button>' : '') +
       '<form id="sf" class="row" style="gap:8px"><input id="sc" placeholder="or type the code, e.g. R-0012" autocapitalize="characters" style="flex:1;margin:0;background:#fff;color:#000"><button class="btn sm">Go</button></form></div>';
     document.body.appendChild(el);
     const video = $('video', el), msg = $('#smsg', el), frame = $('.frame', el), logEl = $('#slog', el);
     scanner = { el, stream: null, timer: null, last: '', lastAt: 0, o };
     $('#sx', el).onclick = () => { closeScanner(); if (o.onClose) o.onClose(); };
+    if ($('#nostk', el)) $('#nostk', el).onclick = () => { closeScanner(); go('/add?copy=' + o.from.code); };
     $('#sf', el).onsubmit = (e) => { e.preventDefault(); const r = parseScan($('#sc', el).value); if (r) handle(r); else msg.textContent = 'That is not a sticker code.'; };
     const handle = async (r) => {
       const key = r.kind + r.code; const now = Date.now();
@@ -548,6 +586,12 @@
       beep(); frame.classList.add('hit'); setTimeout(() => frame.classList.remove('hit'), 400);
       const add = (t, cls) => { logEl.insertAdjacentHTML('afterbegin', '<div class="' + (cls || '') + '">' + t + '</div>'); };
       if (o.mode === 'go') { closeScanner(); go(r.kind === 'loc' ? '/l/' + r.code : '/i/' + r.code); return; }
+      if (o.mode === 'copy') {
+        if (r.kind === 'loc') { msg.textContent = 'That is a place sticker. Scan a blank item sticker.'; return; }
+        const used = item(r.code);
+        if (used) { msg.textContent = r.code + ' is already on "' + used.name + '". Scan a BLANK sticker.'; return; }
+        closeScanner(); go('/i/' + r.code + '?copy=' + o.from.code); return;
+      }
       if (o.mode === 'pickLoc') {
         if (r.kind !== 'loc') { msg.textContent = 'That is an item sticker — scan the shelf/bin sticker.'; return; }
         const l = loc(r.code); if (!l) { msg.textContent = 'Unknown place ' + r.code; return; }

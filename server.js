@@ -680,6 +680,22 @@ const server = http.createServer(async (req, res) => {
         log(item, by, 'Removed photo', ''); save(); broadcast({ t: 'item', item: itemOut(item) });
         return sendJson(res, 200, { ok: true, item: itemOut(item) });
       }
+      if (method === 'POST' && sub === '/copies') {
+        // N new items like this one, each with its own next sticker number (and so its own QR).
+        const b = await readBody(req); const n = num(b.count, 1, 100, 0);
+        if (!n) return sendJson(res, 400, { error: 'How many copies?' });
+        const now = new Date().toISOString(); const made = [];
+        const COPY = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value'];
+        for (let k = 0; k < n; k++) {
+          const c = { code: nextCode(), status: 'Available', holder: '', show: '', due: '', photos: b.photo ? item.photos.slice(0, 1) : [],
+            history: [], created_at: now, created_by: by, updated_at: now, updated_by: by, last_seen: '' };
+          COPY.forEach((f) => { c[f] = item[f] == null ? '' : item[f]; });
+          log(c, by, 'Added', 'copied from ' + item.code);
+          store.items.push(c); made.push(c);
+        }
+        save(); made.forEach((c) => broadcast({ t: 'item', item: itemOut(c) }));
+        return sendJson(res, 200, { ok: true, items: made.map(itemOut) });
+      }
       if (method === 'POST' && sub === '/cover') {
         const b = await readBody(req); const pid = s(b.pid, 40);
         if (item.photos.includes(pid)) { item.photos = [pid].concat(item.photos.filter((x) => x !== pid)); save(); broadcast({ t: 'item', item: itemOut(item) }); }
