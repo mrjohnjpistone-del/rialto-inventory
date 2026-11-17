@@ -149,6 +149,36 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     r = await call('POST', '/api/items/PROP-0010/action', { action: 'seen' }); ok(r.s === 200 && r.j.item.code === 'FURN-0003', 'old sticker still opens the item');
     r = await call('POST', '/api/items', { name: 'x', code: 'PROP-0010' }); ok(r.s === 409, 'old code is never reissued');
 
+    // ── Department-head accounts ──
+    const masterCookie = cookie;
+    r = await call('POST', '/api/admins', { name: 'Costume Shop Head', user: 'Costumes' });
+    ok(r.s === 200 && r.j.admin.user === 'costumes' && /^Rialto-[A-Z0-9]{6}$/.test(r.j.temp_password) && r.j.admin.must_change, 'owner creates account with temp password');
+    const temp = r.j.temp_password, cid = r.j.admin.id;
+    r = await call('POST', '/api/admins', { name: 'Dup', user: 'costumes' }); ok(r.s === 409, 'duplicate username refused');
+    cookie = '';
+    r = await call('POST', '/api/login', { user: 'costumes', password: 'nope' }); ok(r.s === 401, 'wrong password refused');
+    r = await call('POST', '/api/login', { user: 'COSTUMES', password: temp }); ok(r.s === 200 && r.j.must_change === true, 'login with temp password, must change');
+    cookie = (r.h.get('set-cookie') || '').split(';')[0]; const tempCookie = cookie;
+    r = await call('GET', '/api/data'); ok(r.j.role === 'admin' && r.j.me.name === 'Costume Shop Head' && !r.j.me.manager && r.j.admins.length === 0, 'dept head is admin, not owner, sees no account list');
+    r = await call('POST', '/api/items', { name: 'Feather boa', category: 'Accessories & jewelry' }); ok(r.j.item.created_by === 'Costume Shop Head', 'history records the account name');
+    await call('DELETE', '/api/items/' + r.j.item.code); ok(true, 'dept head can delete');
+    r = await call('POST', '/api/admins', { name: 'x', user: 'xxx' }); ok(r.s === 403, 'dept head cannot add accounts');
+    r = await call('POST', '/api/settings', { crew_key: 'NEWCREW1' }); ok(r.s === 403, 'dept head cannot change crew code');
+    r = await call('POST', '/api/account/password', { current: 'bad', password: 'Gowns&Hats2027' }); ok(r.s === 400, 'change needs current password');
+    r = await call('POST', '/api/account/password', { current: temp, password: 'short' }); ok(r.s === 400, 'short password refused');
+    r = await call('POST', '/api/account/password', { current: temp, password: 'Gowns&Hats2027' }); ok(r.s === 200, 'password changed');
+    cookie = (r.h.get('set-cookie') || '').split(';')[0];
+    r = await call('GET', '/api/data'); ok(r.s === 200 && r.j.me.must_change === false, 'new session valid, must_change cleared');
+    cookie = tempCookie; r = await call('GET', '/api/data'); ok(r.s === 401, 'old sessions signed out after password change');
+    cookie = ''; r = await call('POST', '/api/login', { user: 'costumes', password: temp }); ok(r.s === 401, 'temp password no longer works');
+    r = await call('POST', '/api/login', { user: 'costumes', password: 'Gowns&Hats2027' }); ok(r.s === 200 && !r.j.must_change, 'login with own password');
+    cookie = masterCookie;
+    r = await call('POST', '/api/admins/' + cid + '/reset'); ok(r.s === 200 && r.j.temp_password && r.j.admin.must_change, 'owner resets a forgotten password');
+    cookie = ''; r = await call('POST', '/api/login', { user: 'costumes', password: 'Gowns&Hats2027' }); ok(r.s === 401, 'old password dead after reset');
+    cookie = masterCookie;
+    r = await call('DELETE', '/api/admins/' + cid); ok(r.s === 200, 'owner removes account');
+    r = await call('GET', '/api/data'); ok(r.j.admins.length === 0, 'account gone');
+
     // Mirror down at boot: no writes until the restore lands, then the full copy loads.
     await wait(2600);
     inv.kill('SIGTERM'); await wait(800);
@@ -161,6 +191,18 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     await up('http://localhost:' + AUD_PORT + '/health');
     for (let i = 0; i < 40 && r.s === 503; i++) { await wait(1000); r = await call('GET', '/api/data'); }
     ok(r.s === 200 && r.j.items.length === 46 && !r.j.items.some((i) => i.name === 'Should not land'), 'full inventory restored after mirror came back: ' + (r.j && r.j.items.length));
+
+    // Brand-new install with no backup configured: admin sign-in form must work (regression: no secret → 500)
+    const solo = start(__dirname, { PORT: 3913, DATA_DIR: path.join(tmp, 'solo'), CREW_KEY: 'CREW-SOLO', ADMIN_KEY: 'ADMIN-SOLOKEY' });
+    await up('http://localhost:3913/health');
+    const S = 'http://localhost:3913';
+    let sr = await fetch(S + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'ADMIN-SOLOKEY' }) });
+    const sc = sr.headers.get('set-cookie').split(';')[0];
+    sr = await fetch(S + '/api/admins', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-rialto': '1', cookie: sc }, body: JSON.stringify({ name: 'Props', user: 'props' }) });
+    const sj = await sr.json();
+    sr = await fetch(S + '/login', { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'mode=admin&user=props&password=' + encodeURIComponent(sj.temp_password) + '&next=%2Fsettings' });
+    ok(sr.status === 303 && sr.headers.get('location') === '/settings' && /ra=/.test(sr.headers.get('set-cookie') || ''), 'admin sign-in form works on a fresh install with no backup');
+    solo.kill();
   } catch (e) { fails++; console.log('ERROR', e); console.log(inv.out); }
   inv.kill(); aud.kill();
   console.log(passes + ' passed, ' + fails + ' failed');

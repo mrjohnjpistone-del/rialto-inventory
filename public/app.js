@@ -141,7 +141,7 @@
       '<form id="nf"><label>Your name<input id="nm" autocomplete="name" required value="' + esc(LS.get('name', '')) + '"></label><button class="btn big">Save</button></form>',
     (m, close) => { $('#nm', m).focus(); $('#nf', m).onsubmit = (e) => { e.preventDefault(); LS.set('name', $('#nm', m).value.trim().slice(0, 60)); setWho(); close(); }; });
   }
-  function setWho() { const n = LS.get('name', ''); $('#whoBtn').textContent = n ? n.split(' ')[0] : 'Name?'; }
+  function setWho() { if (D && D.me && !D.me.master) LS.set('name', D.me.name); const n = LS.get('name', ''); $('#whoBtn').textContent = n ? n.split(' ')[0] : 'Name?'; }
   $('#whoBtn').onclick = () => go('/settings');
 
   // ── Router ─────────────────────────────────────────────────────────────────
@@ -860,21 +860,66 @@
   function settings() {
     const admin = D.role === 'admin', st = D.settings;
     view.innerHTML = '<h1>Settings</h1>' +
-      '<div class="card"><h3>You</h3><p>Signed in as <b>' + esc(LS.get('name', '') || '(no name)') + '</b> · ' + (admin ? 'Admin' : 'Crew') + '</p>' +
-      '<div class="row"><button class="btn alt" id="cn">Change my name</button><a class="btn alt" href="/logout">Sign out</a></div></div>' +
+      '<div class="card"><h3>You</h3><p>Signed in as <b>' + esc(D.me && !D.me.master ? D.me.name + ' (' + D.me.user + ')' : (LS.get('name', '') || '(no name)')) + '</b> · ' +
+        (D.me ? (D.me.manager ? 'Owner / admin' : 'Department head (admin)') : 'Crew') + '</p>' +
+      '<div class="row">' + (D.me && !D.me.master ? '' : '<button class="btn alt" id="cn">Change my name</button>') + '<a class="btn alt" href="/logout">Sign out</a></div></div>' +
+      (D.me && !D.me.master ? pwFormHtml() : '') +
       '<div class="card"><h3>Add to home screen</h3><p class="muted small">iPhone: Share button → <b>Add to Home Screen</b>. Android: ⋮ menu → <b>Add to Home screen</b>. It then opens like an app.</p></div>' +
       '<div class="card"><h3>Spreadsheet</h3><div class="row"><a class="btn alt" href="/api/export.csv">Download everything (CSV)</a></div></div>' +
-      (admin ? adminHtml(st) : '<form class="card" id="al"><h3>Admin</h3><label>Admin code<input id="ak" autocomplete="off" autocapitalize="characters"></label><button class="btn alt">Unlock admin</button></form>');
-    $('#cn').onclick = () => askName(true);
-    if (!admin) $('#al').onsubmit = async (e) => { e.preventDefault(); try { await api('POST', '/api/login', { key: $('#ak').value }); await load(); render(); toast('Admin unlocked', 'good'); } catch (er) { toast(er.message, 'bad'); } };
+      (admin ? adminHtml(st) : '<form class="card" id="al"><h3>Department head sign-in</h3>' +
+        '<label>Username<input id="au" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>' +
+        '<label>Password<input id="ap" type="password" autocomplete="current-password" required></label><button class="btn alt big">Sign in as admin</button></form>');
+    if ($('#cn')) $('#cn').onclick = () => askName(true);
+    if (D.me && !D.me.master) wirePwForm();
+    if (!admin) $('#al').onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api('POST', '/api/login', { user: $('#au').value, password: $('#ap').value }); await load(); setWho(); render(); toast('Signed in as ' + D.me.name, 'good'); checkMustChange(); }
+      catch (er) { toast(er.message, 'bad'); }
+    };
     else wireAdmin(st);
   }
+  function pwFormHtml() {
+    return '<form class="card" id="pwf"><h3>Change my password</h3>' +
+      '<label>Current password<input id="pw0" type="password" autocomplete="current-password" required></label>' +
+      '<label>New password (8 or more characters)<input id="pw1" type="password" autocomplete="new-password" minlength="8" required></label>' +
+      '<label>New password again<input id="pw2" type="password" autocomplete="new-password" minlength="8" required></label>' +
+      '<button class="btn big">Change password</button></form>';
+  }
+  function wirePwForm(onDone) {
+    $('#pwf').onsubmit = async (e) => {
+      e.preventDefault();
+      if ($('#pw1').value !== $('#pw2').value) return toast('The two new passwords do not match.', 'bad');
+      try { await api('POST', '/api/account/password', { current: $('#pw0').value, password: $('#pw1').value }); await load(); toast('Password changed', 'good'); if (onDone) onDone(); else render(); }
+      catch (er) { toast(er.message, 'bad'); }
+    };
+  }
+  function checkMustChange() {
+    if (!D.me || !D.me.must_change) return;
+    modal('<h2>Set your own password</h2><p class="muted">You signed in with a temporary password. Choose your own now — only you will know it.</p>' + pwFormHtml().replace('<form class="card" id="pwf"><h3>Change my password</h3>', '<form id="pwf">'),
+      (m, close) => { m.onclick = null; wirePwForm(() => { close(); render(); }); });
+  }
+  function accountsHtml() {
+    if (!D.me || !D.me.manager) return '';
+    return '<div class="card"><h3>Admin accounts</h3><p class="muted small">Each department head signs in with their own username and password. New accounts and resets get a temporary password they must change the first time.</p>' +
+      '<ul class="hist">' + D.admins.map((a) => '<li><b>' + esc(a.name) + '</b> · <span class="code">' + esc(a.user) + '</span>' + (a.manager ? ' · owner' : '') +
+        (a.must_change ? ' · <span class="muted">temporary password</span>' : '') + '<br><span class="muted small">' + (a.last_login ? 'last sign-in ' + esc(when(a.last_login)) : 'never signed in') + '</span>' +
+        '<div class="row" style="margin-top:6px"><button class="btn alt sm" data-reset="' + a.id + '">Reset password</button>' +
+        (D.me.id === a.id ? '' : '<button class="btn alt sm" data-del="' + a.id + '" style="color:var(--bad)">Remove</button>') + '</div></li>').join('') + '</ul>' +
+      (D.admins.length ? '' : '<p class="muted">No accounts yet.</p>') +
+      '<form id="naf" style="margin-top:12px"><h3>Add a department head</h3><div class="grid2"><label>Name or role<input id="nan" placeholder="Costume Shop Head" required></label>' +
+      '<label>Username<input id="nau" placeholder="costumes" autocapitalize="none" spellcheck="false" required></label></div>' +
+      '<label class="check"><input type="checkbox" id="nam"> Owner (can manage accounts and codes)</label><button class="btn alt big">Add account</button></form></div>';
+  }
+  function showTemp(a, temp) {
+    modal('<h2>Temporary password for ' + esc(a.name) + '</h2><p>Username: <b class="code">' + esc(a.user) + '</b></p><p>Temporary password: <b class="code" style="font-size:1.3rem">' + esc(temp) + '</b></p>' +
+      '<p class="muted small">Write it down now — it is not shown again. They will be asked to choose their own password the first time they sign in.</p><button class="btn big" data-close>Done</button>');
+  }
   function adminHtml(st) {
-    return '<div class="card"><h3>Invite the crew</h3><p>Print the poster and tape it up, or text people this link (it signs them in):</p>' +
+    return accountsHtml() + '<div class="card"><h3>Invite the crew</h3><p>Print the poster and tape it up, or text people this link (it signs them in):</p>' +
       '<p><input readonly id="jl" value="' + esc(D.base + '/join?k=' + st.crew_key) + '"></p>' +
       '<div class="row"><button class="btn" id="cp">Copy link</button><a class="btn alt" href="/poster" target="_blank">Print crew poster</a></div></div>' +
-      '<form class="card" id="kf"><h3>Codes</h3><label>Crew code (everyone)<input id="ck" value="' + esc(st.crew_key) + '"></label>' +
-      '<label>Admin code (you)<input id="adk" value="' + esc(st.admin_key) + '"></label><p class="muted small">Changing the crew code signs everyone out until they use the new one.</p><button class="btn alt">Save codes</button></form>' +
+      (D.me && D.me.manager ? '<form class="card" id="kf"><h3>Codes</h3><label>Crew code (everyone)<input id="ck" value="' + esc(st.crew_key) + '"></label>' +
+      '<label>Master admin code (owner recovery)<input id="adk" value="' + esc(st.admin_key) + '"></label><p class="muted small">Changing the crew code signs everyone out until they use the new one.</p><button class="btn alt">Save codes</button></form>' : '') +
       '<form class="card" id="sf2"><h3>Names</h3><label>App title<input id="tt" value="' + esc(st.title) + '"></label><label>Organization (printed on stickers)<input id="og" value="' + esc(st.org) + '"></label>' +
       '<label>Departments — one per line: CODE | Name | Room | #colour<textarea id="cats" rows="10" style="font-family:monospace;font-size:.85rem">' +
         esc(st.departments.map((d) => [d.p, d.name, d.room || '', d.color].join(' | ')).join('\n')) + '</textarea></label>' +
@@ -884,8 +929,21 @@
       '<div class="card"><h3>Removed items</h3>' + (D.removed.length ? '<ul class="hist">' + D.removed.slice(0, 50).map((r) => '<li><b>' + esc(r.name) + '</b> <span class="code">' + esc(r.code) + '</span> <button class="btn alt sm" data-restore="' + esc(r.code) + '">Restore</button></li>').join('') + '</ul>' : '<p class="muted">None.</p>') + '</div>';
   }
   function wireAdmin() {
+    $$('[data-reset]').forEach((b) => b.onclick = async () => {
+      const a = D.admins.find((x) => x.id === b.dataset.reset); if (!confirm('Give ' + a.name + ' a new temporary password? Their old password stops working.')) return;
+      try { const r = await api('POST', '/api/admins/' + a.id + '/reset'); await load(); render(); showTemp(r.admin, r.temp_password); } catch (er) { toast(er.message, 'bad'); }
+    });
+    $$('[data-del]').forEach((b) => b.onclick = async () => {
+      const a = D.admins.find((x) => x.id === b.dataset.del); if (!confirm('Remove the admin account for ' + a.name + '?')) return;
+      try { await api('DELETE', '/api/admins/' + a.id); await load(); render(); toast('Removed', 'good'); } catch (er) { toast(er.message, 'bad'); }
+    });
+    if ($('#naf')) $('#naf').onsubmit = async (e) => {
+      e.preventDefault();
+      try { const r = await api('POST', '/api/admins', { name: $('#nan').value, user: $('#nau').value, manager: $('#nam').checked }); await load(); render(); showTemp(r.admin, r.temp_password); }
+      catch (er) { toast(er.message, 'bad'); }
+    };
     $('#cp').onclick = () => { const i = $('#jl'); i.select(); (navigator.clipboard ? navigator.clipboard.writeText(i.value) : Promise.reject()).then(() => toast('Copied', 'good'), () => document.execCommand('copy')); };
-    $('#kf').onsubmit = async (e) => { e.preventDefault(); try { await api('POST', '/api/settings', { crew_key: $('#ck').value, admin_key: $('#adk').value }); await load(); render(); toast('Codes saved', 'good'); } catch (er) { toast(er.message, 'bad'); } };
+    if ($('#kf')) $('#kf').onsubmit = async (e) => { e.preventDefault(); try { await api('POST', '/api/settings', { crew_key: $('#ck').value, admin_key: $('#adk').value }); await load(); render(); toast('Codes saved', 'good'); } catch (er) { toast(er.message, 'bad'); } };
     $('#sf2').onsubmit = async (e) => { e.preventDefault(); try { await api('POST', '/api/settings', { title: $('#tt').value, org: $('#og').value, departments: $('#cats').value.split('\n').map((l) => l.split('|').map((s) => s.trim())).filter((a) => a[0]).map(([p, name, room, color]) => ({ p, name, room, color })) }); await load(); render(); toast('Saved', 'good'); } catch (er) { toast(er.message, 'bad'); } };
     $$('[data-restore]').forEach((b) => b.onclick = async () => { try { await api('POST', '/api/restore', { code: b.dataset.restore }); await load(); render(); toast('Restored', 'good'); } catch (er) { toast(er.message, 'bad'); } });
     $('#imp').onchange = async (e) => {
@@ -916,6 +974,6 @@
   // ── Boot ───────────────────────────────────────────────────────────────────
   (async function boot() {
     try { await load(); } catch (e) { view.innerHTML = '<div class="card"><h2>Could not load</h2><p>' + esc(e.message) + '</p><button class="btn" onclick="location.reload()">Try again</button></div>'; return; }
-    setWho(); render(); live(); askName(false);
+    setWho(); render(); live(); if (D.me && D.me.must_change) checkMustChange(); else askName(false);
   })();
 })();

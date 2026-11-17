@@ -99,11 +99,13 @@ function freshStore() {
       next_loc: 1,
       crew_key: process.env.CREW_KEY || ('RIALTO-' + randKey(4)),
       admin_key: process.env.ADMIN_KEY || ('ADMIN-' + randKey(8)),
+      secret: crypto.randomBytes(32).toString('hex'),   // signs admin session cookies
     },
     items: [],
     locations: [],
     removed: [],
     pending_photos: [],
+    admins: [],          // department-head logins: { id, name, user, salt, hash, ver, manager, must_change }
   };
 }
 
@@ -123,7 +125,9 @@ function normalize(d) {
     locations: Array.isArray(d && d.locations) ? d.locations : [],
     removed: Array.isArray(d && d.removed) ? d.removed : [],
     pending_photos: Array.isArray(d && d.pending_photos) ? d.pending_photos : [],
+    admins: Array.isArray(d && d.admins) ? d.admins : [],
   };
+  if (!out.settings.secret) out.settings.secret = crypto.randomBytes(32).toString('hex');
   if (!Array.isArray(out.settings.departments) || !out.settings.departments.length)
     out.settings.departments = DEFAULT_DEPTS.map((x) => Object.assign({}, x));
   if (!out.settings.next || typeof out.settings.next !== 'object') out.settings.next = {};
@@ -286,7 +290,33 @@ function cookies(req) {
   });
   return out;
 }
+// ── Admin accounts ──────────────────────────────────────────────────────────
+// Each department head has their own username + password (scrypt-hashed). A signed
+// cookie "ra" = id.ver.sig; bumping ver (password change / reset) signs out old sessions.
+// The master admin code (ADMIN_KEY) still works as the owner's recovery key.
+function hashPw(pw, salt) { return crypto.scryptSync(String(pw), salt, 32).toString('hex'); }
+function sign(v) { return crypto.createHmac('sha256', store.settings.secret).update(v).digest('hex').slice(0, 32); }
+function account(req) {
+  const v = cookies(req).ra; if (!v) return null;
+  const [id, ver, sig] = String(v).split('.');
+  const a = store.admins.find((x) => x.id === id);
+  if (!a || String(a.ver) !== ver || !sig) return null;
+  const good = sign(id + '.' + ver);
+  if (sig.length !== good.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(good))) return null;
+  return a;
+}
+function setAdminCookie(res, a) {
+  res.setHeader('Set-Cookie', 'ra=' + a.id + '.' + a.ver + '.' + sign(a.id + '.' + a.ver) + '; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax' +
+    (PUBLIC_URL.startsWith('https') ? '; Secure' : ''));
+}
+function isManager(req) {
+  const a = account(req); if (a) return !!a.manager;
+  return (cookies(req).rk || '') === store.settings.admin_key;
+}
+function tempPassword() { return 'Rialto-' + randKey(6); }
+function adminOut(a) { return { id: a.id, name: a.name, user: a.user, manager: !!a.manager, must_change: !!a.must_change, created_at: a.created_at, last_login: a.last_login || '' }; }
 function role(req) {
+  if (account(req)) return 'admin';
   const k = cookies(req).rk || req.headers['x-key'] || '';
   if (!k) return null;
   if (k === store.settings.admin_key) return 'admin';
@@ -302,7 +332,10 @@ function baseUrl(req) {
   const proto = (req.headers['x-forwarded-proto'] || 'http').split(',')[0];
   return proto + '://' + req.headers.host;
 }
-function who(req) { return s(decodeURIComponent(req.headers['x-user'] || ''), 60) || 'Someone'; }
+function who(req) {
+  const a = account(req); if (a) return a.name;           // signed-in admins are named by their account
+  return s(decodeURIComponent(req.headers['x-user'] || ''), 60) || 'Someone';
+}
 
 // Login throttle: 12 wrong codes / 15 min / IP.
 const loginFails = new Map();
@@ -490,7 +523,12 @@ function loginPage(msg) {
     '<form method="post" action="/login"><label>Crew code<input name="key" autocomplete="off" autocapitalize="characters" required autofocus></label>' +
     '<input type="hidden" name="next" value=""><button class="btn big">Start</button></form>' +
     '<p class="muted">No code? Ask whoever runs the inventory, or scan the crew poster.</p>' +
-    '<script>document.querySelector("[name=next]").value=location.pathname+location.search</script></main></body></html>';
+    '<hr style="border:0;border-top:1px solid var(--line);margin:22px 0"><h2>Department heads</h2>' +
+    '<form method="post" action="/login"><input type="hidden" name="mode" value="admin">' +
+    '<label>Username<input name="user" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>' +
+    '<label>Password<input name="password" type="password" autocomplete="current-password" required></label>' +
+    '<input type="hidden" name="next" value=""><button class="btn alt big">Sign in</button></form>' +
+    '<script>document.querySelectorAll("[name=next]").forEach(function(e){e.value=location.pathname+location.search})</script></main></body></html>';
 }
 
 // ── Server ───────────────────────────────────────────────────────────────────
@@ -518,11 +556,26 @@ const server = http.createServer(async (req, res) => {
     if (method === 'POST' && (p === '/login' || p === '/api/login')) {
       const ip = clientIp(req);
       if (loginBlocked(ip)) return p === '/login' ? sendHtml(res, loginPage('Too many tries. Wait 15 minutes.'), 429) : sendJson(res, 429, { error: 'Too many tries. Wait 15 minutes.' });
-      let key = '', next = '/';
+      let key = '', next = '/', user = '', password = '';
       if (p === '/login') {
         const t = await readText(req, 4096); const f = new URLSearchParams(t);
         key = s(f.get('key'), 80).toUpperCase(); next = s(f.get('next'), 200) || '/';
-      } else { const b = await readBody(req); key = s(b.key, 80).toUpperCase(); }
+        user = s(f.get('user'), 40).toLowerCase(); password = String(f.get('password') || '').slice(0, 200);
+      } else { const b = await readBody(req); key = s(b.key, 80).toUpperCase(); user = s(b.user, 40).toLowerCase(); password = String(b.password || '').slice(0, 200); }
+      const safeNext = next.startsWith('/') && !next.startsWith('//') ? next : '/';
+      if (user) {
+        if (!restoreDone) return p === '/login' ? sendHtml(res, loginPage('Starting up. Try again in a few seconds.'), 503) : sendJson(res, 503, { error: 'Starting up. Try again in a few seconds.', starting: true });
+        const a = store.admins.find((x) => x.user === user);
+        const okPw = a && hashPw(password, a.salt) === a.hash;
+        if (!okPw) {
+          loginFailed(ip);
+          return p === '/login' ? sendHtml(res, loginPage('Wrong username or password.'), 401) : sendJson(res, 401, { error: 'Wrong username or password.' });
+        }
+        a.last_login = new Date().toISOString(); save();
+        setAdminCookie(res, a);
+        if (p === '/login') { res.writeHead(303, { Location: safeNext }); return res.end(); }
+        return sendJson(res, 200, { ok: true, role: 'admin', must_change: !!a.must_change });
+      }
       const ok = key && (key === store.settings.crew_key.toUpperCase() || key === store.settings.admin_key.toUpperCase());
       if (!ok) {
         loginFailed(ip);
@@ -533,7 +586,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/login') { res.writeHead(303, { Location: next.startsWith('/') && !next.startsWith('//') ? next : '/' }); return res.end(); }
       return sendJson(res, 200, { ok: true, role: real === store.settings.admin_key ? 'admin' : 'crew' });
     }
-    if (p === '/logout') { res.setHeader('Set-Cookie', 'rk=; Path=/; Max-Age=0'); res.writeHead(302, { Location: '/' }); return res.end(); }
+    if (p === '/logout') { res.setHeader('Set-Cookie', ['rk=; Path=/; Max-Age=0', 'ra=; Path=/; Max-Age=0']); res.writeHead(302, { Location: '/' }); return res.end(); }
 
     if (!restoreDone && (p.startsWith('/api/') || p.startsWith('/p/')))
       return sendJson(res, 503, { error: 'Starting up. Try again in a few seconds.', starting: true });
@@ -582,6 +635,8 @@ const server = http.createServer(async (req, res) => {
       const st = store.settings;
       return sendJson(res, 200, {
         role: r, base: baseUrl(req),
+        me: account(req) ? adminOut(account(req)) : (isAdmin ? { name: 'Master admin code', manager: true, master: true } : null),
+        admins: isManager(req) ? store.admins.map(adminOut) : [],
         settings: { title: st.title, org: st.org, departments: st.departments, next: st.next, next_loc: st.next_loc,
           categories: st.departments.map((d) => d.name),
           crew_key: isAdmin ? st.crew_key : undefined, admin_key: isAdmin ? st.admin_key : undefined },
@@ -795,6 +850,51 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, from: codes[0], count, codes });
     }
 
+    // ── My password (any department-head account) ──
+    if (method === 'POST' && p === '/api/account/password') {
+      const a = account(req); if (!a) return sendJson(res, 403, { error: 'Sign in with your own username to change a password.' });
+      const b = await readBody(req); const pw = String(b.password || '');
+      if (hashPw(String(b.current || ''), a.salt) !== a.hash) { loginFailed(clientIp(req)); return sendJson(res, 400, { error: 'Your current password is not right.' }); }
+      if (pw.length < 8) return sendJson(res, 400, { error: 'Use at least 8 characters.' });
+      if (pw.toLowerCase().includes(a.user)) return sendJson(res, 400, { error: 'Do not put your username in your password.' });
+      if (hashPw(pw, a.salt) === a.hash) return sendJson(res, 400, { error: 'Pick a password different from the old one.' });
+      a.salt = crypto.randomBytes(16).toString('hex'); a.hash = hashPw(pw, a.salt); a.ver = (a.ver || 0) + 1; a.must_change = false;
+      save(); setAdminCookie(res, a);  // other devices signed in as this person are signed out
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // ── Manage admin accounts (owner / manager only) ──
+    if (p === '/api/admins' || p.startsWith('/api/admins/')) {
+      if (!isManager(req)) return sendJson(res, 403, { error: 'Only the inventory owner can manage admin accounts.' });
+      if (method === 'POST' && p === '/api/admins') {
+        const b = await readBody(req);
+        const name = s(b.name, 60); const user = s(b.user, 30).toLowerCase();
+        if (!name) return sendJson(res, 400, { error: 'Give their name or role.' });
+        if (!/^[a-z0-9._-]{3,30}$/.test(user)) return sendJson(res, 400, { error: 'Username: 3–30 letters, numbers, dots or dashes, no spaces.' });
+        if (store.admins.some((x) => x.user === user)) return sendJson(res, 409, { error: 'That username is taken.' });
+        const temp = tempPassword(); const salt = crypto.randomBytes(16).toString('hex');
+        const a = { id: crypto.randomBytes(8).toString('hex'), name, user, salt, hash: hashPw(temp, salt), ver: 1, manager: !!b.manager, must_change: true, created_at: new Date().toISOString(), created_by: by };
+        store.admins.push(a); save();
+        return sendJson(res, 200, { ok: true, admin: adminOut(a), temp_password: temp });
+      }
+      const am = p.match(/^\/api\/admins\/([a-f0-9]{16})(\/reset)?$/);
+      const a = am && store.admins.find((x) => x.id === am[1]);
+      if (!a) return sendJson(res, 404, { error: 'No such account.' });
+      if (method === 'POST' && am[2]) {
+        const temp = tempPassword(); a.salt = crypto.randomBytes(16).toString('hex'); a.hash = hashPw(temp, a.salt);
+        a.ver = (a.ver || 0) + 1; a.must_change = true; save();
+        return sendJson(res, 200, { ok: true, admin: adminOut(a), temp_password: temp });
+      }
+      if (method === 'DELETE' && !am[2]) {
+        const me = account(req);
+        if (me && me.id === a.id) return sendJson(res, 400, { error: 'You cannot remove your own account.' });
+        if (a.manager && store.admins.filter((x) => x.manager).length === 1) return sendJson(res, 400, { error: 'Keep at least one owner account.' });
+        store.admins = store.admins.filter((x) => x !== a); save();
+        return sendJson(res, 200, { ok: true });
+      }
+      return sendJson(res, 405, { error: 'Not allowed.' });
+    }
+
     // ── Admin ──
     if (!isAdmin && (p === '/api/restore' || p === '/api/settings' || p === '/api/import' || p === '/api/forget'))
       return sendJson(res, 403, { error: 'That needs the admin code.' });
@@ -832,6 +932,7 @@ const server = http.createServer(async (req, res) => {
         for (const i of store.items) { const d = out.find((o) => o.p === prefixOf(i.code)); if (d) i.category = d.name; }
         st.departments = out;
       }
+      if ((b.crew_key != null || b.admin_key != null) && !isManager(req)) return sendJson(res, 403, { error: 'Only the inventory owner can change the crew or master codes.' });
       if (b.crew_key != null) { const k = s(b.crew_key, 40).toUpperCase(); if (k.length < 6) return sendJson(res, 400, { error: 'Crew code: at least 6 characters.' }); st.crew_key = k; st.crew_key_rotated = true; }
       if (b.admin_key != null) { const k = s(b.admin_key, 40).toUpperCase(); if (k.length < 8) return sendJson(res, 400, { error: 'Admin code: at least 8 characters.' }); st.admin_key = k; st.admin_key_rotated = true; setKeyCookie(res, k); }
       if (st.crew_key === st.admin_key) return sendJson(res, 400, { error: 'Crew and admin codes must differ.' });
