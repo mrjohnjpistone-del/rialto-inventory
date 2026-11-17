@@ -49,13 +49,38 @@ const BACKUP_FILES_URL = (process.env.BACKUP_FILES_URL || '').replace(/\/+$/, ''
 const BACKUP_KEY       = process.env.BACKUP_KEY || '';
 
 // ── Vocabulary ───────────────────────────────────────────────────────────────
-const DEFAULT_CATEGORIES = ['Wardrobe', 'Props', 'Furniture', 'Set Pieces & Flats',
-  'Lighting', 'Sound & Video', 'Rigging & Hardware', 'Tools', 'Fabric & Soft Goods',
-  'Paint & Supplies', 'Office & Front of House', 'Other'];
+// Department codes, settled 2026-11-17 with an inventory-control and a theatre production
+// review: a short readable word, a hyphen, 4 digits (COST-0141), numbered separately per
+// department. Size and garment type live in the record, never in the code. Sticker colour
+// follows the storage ROOM (all costume-shop departments are purple). Consumables (paint,
+// tape, lamps, batteries, makeup, yardage) are not tagged; their shelf or bin is (LOC).
+const DEFAULT_DEPTS = [
+  { p: 'COST', name: 'Costumes',                      room: 'Costume shop',  color: '#6b3fa0' },
+  { p: 'WIG',  name: 'Wigs & hair',                   room: 'Costume shop',  color: '#6b3fa0' },
+  { p: 'HAT',  name: 'Hats',                          room: 'Costume shop',  color: '#6b3fa0' },
+  { p: 'SHOE', name: 'Shoes & boots',                 room: 'Costume shop',  color: '#6b3fa0' },
+  { p: 'ACC',  name: 'Accessories & jewelry',         room: 'Costume shop',  color: '#6b3fa0' },
+  { p: 'PROP', name: 'Props & set dressing',          room: 'Prop room',     color: '#f2c200' },
+  { p: 'FURN', name: 'Furniture',                     room: 'Scene storage', color: '#2e7d32' },
+  { p: 'SET',  name: 'Set pieces, flats & platforms', room: 'Scene storage', color: '#2e7d32' },
+  { p: 'DRAP', name: 'Drapes & soft goods',           room: 'Soft goods',    color: '#1a2a5e' },
+  { p: 'LITE', name: 'Lighting',                      room: 'Lighting & sound', color: '#1e73be' },
+  { p: 'SND',  name: 'Sound & video',                 room: 'Lighting & sound', color: '#1e73be' },
+  { p: 'RIG',  name: 'Rigging & hardware',            room: 'Shop & rigging', color: '#616161' },
+  { p: 'TOOL', name: 'Tools',                         room: 'Shop & rigging', color: '#616161' },
+  { p: 'FOH',  name: 'Office & front of house',       room: 'Lobby & office', color: '#ffffff' },
+  { p: 'LOAN', name: 'Borrowed / rented (not ours)',  room: 'Return to owner', color: '#c62828' },
+];
+const LOC_PREFIX = 'LOC';
 const STATUSES = ['Available', 'Checked out', 'In a show', 'Needs repair', 'Missing', 'Retired'];
 const CONDITIONS = ['New', 'Good', 'Fair', 'Poor', 'Needs repair'];
 const CODE_RE = /^[A-Z]{1,4}-\d{1,6}$/;
-const LOC_RE  = /^L-\d{1,5}$/;
+const LOC_RE  = /^(LOC|L)-\d{1,6}$/;
+// "cost141", "COST 141", "Cost-0141" → "COST-0141"
+function normCode(v) {
+  const m = String(v || '').trim().toUpperCase().match(/^([A-Z]{1,4})[\s_-]*(\d{1,6})$/);
+  return m ? m[1] + '-' + String(Number(m[2])).padStart(4, '0') : '';
+}
 
 // ── Store ────────────────────────────────────────────────────────────────────
 function randKey(n) {
@@ -69,10 +94,9 @@ function freshStore() {
     settings: {
       title: 'Rialto Inventory',
       org: 'Rialto Community Arts Center',
-      prefix: 'R',
-      next_num: 1,
+      departments: DEFAULT_DEPTS.map((d) => Object.assign({}, d)),
+      next: {},          // per-prefix next number, e.g. { COST: 142 }
       next_loc: 1,
-      categories: DEFAULT_CATEGORIES.slice(),
       crew_key: process.env.CREW_KEY || ('RIALTO-' + randKey(4)),
       admin_key: process.env.ADMIN_KEY || ('ADMIN-' + randKey(8)),
     },
@@ -100,12 +124,17 @@ function normalize(d) {
     removed: Array.isArray(d && d.removed) ? d.removed : [],
     pending_photos: Array.isArray(d && d.pending_photos) ? d.pending_photos : [],
   };
-  if (!Array.isArray(out.settings.categories) || !out.settings.categories.length)
-    out.settings.categories = DEFAULT_CATEGORIES.slice();
+  if (!Array.isArray(out.settings.departments) || !out.settings.departments.length)
+    out.settings.departments = DEFAULT_DEPTS.map((x) => Object.assign({}, x));
+  if (!out.settings.next || typeof out.settings.next !== 'object') out.settings.next = {};
+  delete out.settings.categories; delete out.settings.prefix; delete out.settings.next_num;
   // Env keys win, so a key set on the host is never shadowed by an old stored one.
   if (process.env.CREW_KEY && !out.settings.crew_key_rotated) out.settings.crew_key = process.env.CREW_KEY;
   if (process.env.ADMIN_KEY && !out.settings.admin_key_rotated) out.settings.admin_key = process.env.ADMIN_KEY;
-  for (const it of out.items) { if (!Array.isArray(it.photos)) it.photos = []; if (!Array.isArray(it.history)) it.history = []; }
+  for (const it of out.items) {
+    if (!Array.isArray(it.photos)) it.photos = []; if (!Array.isArray(it.history)) it.history = [];
+    if (!Array.isArray(it.aliases)) it.aliases = [];
+  }
   return out;
 }
 
@@ -286,22 +315,23 @@ function loginFailed(ip) { const a = loginFails.get(ip) || []; a.push(Date.now()
 setInterval(() => { for (const ip of [...loginFails.keys()]) loginBlocked(ip); }, 10 * 60 * 1000).unref();
 
 // ── Items ────────────────────────────────────────────────────────────────────
-function findItem(code) { return store.items.find((i) => i.code === code); }
+function findItem(code) { return store.items.find((i) => i.code === code || (i.aliases && i.aliases.includes(code))); }
+function codeTaken(code) { return !!findItem(code) || store.removed.some((i) => i.code === code); }
+function prefixOf(code) { return String(code).split('-')[0]; }
+function deptByPrefix(p) { return store.settings.departments.find((d) => d.p === p); }
+function deptByName(n) { n = String(n || '').toLowerCase(); return store.settings.departments.find((d) => d.name.toLowerCase() === n || d.p.toLowerCase() === n); }
 function findLoc(code) { return store.locations.find((l) => l.code === code); }
 function pad(n, w) { return String(n).padStart(w, '0'); }
 function codeNum(code) { return Number(String(code).split('-')[1]) || 0; }
-function nextCode() {
-  const p = store.settings.prefix;
-  let n = store.settings.next_num;
-  while (findItem(p + '-' + pad(n, 4))) n++;
-  store.settings.next_num = n + 1;
-  return p + '-' + pad(n, 4);
+function nextCode(prefix) {
+  let n = store.settings.next[prefix] || 1;
+  while (codeTaken(prefix + '-' + pad(n, 4))) n++;
+  store.settings.next[prefix] = n + 1;
+  return prefix + '-' + pad(n, 4);
 }
 function bumpPastCode(code) {
-  if (code.startsWith(store.settings.prefix + '-')) {
-    const n = codeNum(code);
-    if (n >= store.settings.next_num) store.settings.next_num = n + 1;
-  }
+  const p = prefixOf(code), n = codeNum(code);
+  if (n >= (store.settings.next[p] || 1)) store.settings.next[p] = n + 1;
 }
 function log(item, by, action, detail) {
   item.history.unshift({ at: new Date().toISOString(), by, action, detail: detail || '' });
@@ -317,7 +347,7 @@ function applyFields(item, b) {
     if (k === 'status' && v && !STATUSES.includes(v)) v = 'Available';
     if (k === 'condition' && v && !CONDITIONS.includes(v)) v = '';
     if (k === 'location' && v && !findLoc(v)) v = '';
-    if (k === 'category' && !v) v = 'Other';
+    if (k === 'category') continue;
     if (k === 'name' && !v) continue;
     if ((item[k] || '') !== v) { item[k] = v; changed.push(k); }
   }
@@ -343,11 +373,11 @@ function serveStatic(res, rel) {
     'Cache-Control': rel.startsWith('vendor/') ? 'public, max-age=604800' : 'no-cache' });
   res.end(data); return true;
 }
-const APP_ROUTES = /^\/(|i\/[^/]+|l\/[^/]+|add|browse|scan|locations|labels|settings|audit\/[^/]+|recent)$/;
+const APP_ROUTES = /^\/(|i\/[^/]+|l\/[^/]+|add|browse|scan|locations|labels|settings|audit\/[^/]+|recent)$/i;
 
 // ── QR → SVG (server side, for print pages) ──────────────────────────────────
 function qrSvg(text) {
-  const q = qrcode(0, 'M'); q.addData(text); q.make();
+  const q = qrcode(0, 'M'); q.addData(text, /^[0-9A-Z $%*+\-./:]+$/.test(text) ? 'Alphanumeric' : 'Byte'); q.make();
   const n = q.getModuleCount(); const m = 2; // quiet zone in modules (scanners like ≥2 on stickers)
   let d = '';
   for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (q.isDark(r, c)) d += 'M' + (c + m) + ' ' + (r + m) + 'h1v1h-1z';
@@ -378,7 +408,7 @@ function printPage(req, url) {
   const from = url.searchParams.get('from'), count = num(url.searchParams.get('count'), 1, 1000, 0);
   if (from && count) {
     const [p, n0] = from.toUpperCase().split('-'); const start = Number(n0) || 1;
-    codes = []; for (let i = 0; i < count; i++) codes.push(p + '-' + pad(start + i, kind === 'locations' ? 3 : 4));
+    codes = []; for (let i = 0; i < count; i++) codes.push(p + '-' + pad(start + i, 4));
   }
   codes = codes.filter((c) => CODE_RE.test(c) || LOC_RE.test(c)).slice(0, 5000);
   const copies = num(url.searchParams.get('copies'), 1, 10, 1);
@@ -387,7 +417,7 @@ function printPage(req, url) {
     const isLoc = LOC_RE.test(c);
     const thing = isLoc ? findLoc(c) : findItem(c);
     const title = thing ? thing.name : '';
-    for (let k = 0; k < copies; k++) labels.push({ code: c, isLoc, title, href: base + (isLoc ? '/l/' : '/i/') + c });
+    for (let k = 0; k < copies; k++) labels.push({ code: c, isLoc, title, href: (base + (isLoc ? '/L/' : '/I/') + c).toUpperCase() });
   }
   const W = size.w, H = size.h;
   // Wide labels: QR left, text right. Square/tall labels: QR on top, code under it.
@@ -552,7 +582,8 @@ const server = http.createServer(async (req, res) => {
       const st = store.settings;
       return sendJson(res, 200, {
         role: r, base: baseUrl(req),
-        settings: { title: st.title, org: st.org, prefix: st.prefix, next_num: st.next_num, next_loc: st.next_loc, categories: st.categories,
+        settings: { title: st.title, org: st.org, departments: st.departments, next: st.next, next_loc: st.next_loc,
+          categories: st.departments.map((d) => d.name),
           crew_key: isAdmin ? st.crew_key : undefined, admin_key: isAdmin ? st.admin_key : undefined },
         statuses: STATUSES, conditions: CONDITIONS, sizes: Object.fromEntries(Object.entries(SIZES).map(([k, v]) => [k, v.name])),
         items: store.items.map(itemOut), locations: store.locations,
@@ -581,16 +612,23 @@ const server = http.createServer(async (req, res) => {
     if (method === 'POST' && p === '/api/items') {
       const b = await readBody(req);
       if (!s(b.name, 120)) return sendJson(res, 400, { error: 'Give the item a name.' });
-      let code = s(b.code, 16).toUpperCase();
-      if (code) {
-        if (!CODE_RE.test(code)) return sendJson(res, 400, { error: 'That label code does not look right.' });
-        if (findItem(code)) return sendJson(res, 409, { error: code + ' is already on another item.', code });
+      let code = b.code ? normCode(b.code) : '';
+      let dept;
+      if (b.code) {
+        if (!code || !CODE_RE.test(code)) return sendJson(res, 400, { error: 'That sticker code does not look right.' });
+        if (codeTaken(code)) return sendJson(res, 409, { error: code + ' is already on another item.', code });
+        dept = deptByPrefix(prefixOf(code));
+        if (!dept) return sendJson(res, 400, { error: prefixOf(code) + ' is not a department code.' });
         bumpPastCode(code);
-      } else code = nextCode();
+      } else {
+        dept = deptByName(b.category);
+        if (!dept) return sendJson(res, 400, { error: 'Pick a department.' });
+        code = nextCode(dept.p);
+      }
       const now = new Date().toISOString();
-      const item = { code, name: '', category: 'Other', qty: 1, status: 'Available', condition: '', location: '', sublocation: '',
+      const item = { code, name: '', category: dept.name, qty: 1, status: 'Available', condition: '', location: '', sublocation: '',
         color: '', size: '', period: '', tags: '', value: null, description: '', notes: '', holder: '', show: '', due: '',
-        photos: [], history: [], created_at: now, created_by: by, updated_at: now, updated_by: by, last_seen: now };
+        photos: [], history: [], aliases: [], created_at: now, created_by: by, updated_at: now, updated_by: by, last_seen: now };
       applyFields(item, b);
       log(item, by, 'Added', item.location ? 'at ' + ((findLoc(item.location) || {}).name || item.location) : '');
       store.items.push(item); save();
@@ -600,7 +638,7 @@ const server = http.createServer(async (req, res) => {
 
     const im = p.match(/^\/api\/items\/([A-Z0-9-]+)(\/.*)?$/i);
     if (im) {
-      const code = im[1].toUpperCase(); const sub = im[2] || '';
+      const code = normCode(im[1]) || im[1].toUpperCase(); const sub = im[2] || '';
       const item = findItem(code);
       if (!item) return sendJson(res, 404, { error: 'No item ' + code + ' yet.' });
 
@@ -687,7 +725,7 @@ const server = http.createServer(async (req, res) => {
         const now = new Date().toISOString(); const made = [];
         const COPY = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value'];
         for (let k = 0; k < n; k++) {
-          const c = { code: nextCode(), status: 'Available', holder: '', show: '', due: '', photos: b.photo ? item.photos.slice(0, 1) : [],
+          const c = { code: nextCode(prefixOf(item.code)), aliases: [], status: 'Available', holder: '', show: '', due: '', photos: b.photo ? item.photos.slice(0, 1) : [],
             history: [], created_at: now, created_by: by, updated_at: now, updated_by: by, last_seen: '' };
           COPY.forEach((f) => { c[f] = item[f] == null ? '' : item[f]; });
           log(c, by, 'Added', 'copied from ' + item.code);
@@ -695,6 +733,20 @@ const server = http.createServer(async (req, res) => {
         }
         save(); made.forEach((c) => broadcast({ t: 'item', item: itemOut(c) }));
         return sendJson(res, 200, { ok: true, items: made.map(itemOut) });
+      }
+      if (method === 'POST' && sub === '/recode') {
+        const b = await readBody(req); const d = deptByName(b.department);
+        if (!d) return sendJson(res, 400, { error: 'Pick a department.' });
+        if (d.p === prefixOf(item.code)) return sendJson(res, 400, { error: 'It is already in ' + d.name + '.' });
+        const old = item.code; let nc = b.code ? normCode(b.code) : '';
+        if (nc) { if (prefixOf(nc) !== d.p) return sendJson(res, 400, { error: 'That sticker is not a ' + d.p + ' sticker.' });
+          if (codeTaken(nc)) return sendJson(res, 409, { error: nc + ' is already used.' }); bumpPastCode(nc); }
+        else nc = nextCode(d.p);
+        item.aliases = (item.aliases || []).concat(old); item.code = nc; item.category = d.name;
+        item.updated_at = new Date().toISOString(); item.updated_by = by;
+        log(item, by, 'New sticker', old + ' → ' + nc + ' (' + d.name + ')');
+        save(); broadcast({ t: 'reload' });
+        return sendJson(res, 200, { ok: true, item: itemOut(item), old });
       }
       if (method === 'POST' && sub === '/cover') {
         const b = await readBody(req); const pid = s(b.pid, 40);
@@ -709,13 +761,13 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       const name = s(b.name, 80); if (!name) return sendJson(res, 400, { error: 'Name the location (e.g. "Costume loft – rack 3").' });
       if (store.locations.find((l) => l.name.toLowerCase() === name.toLowerCase())) return sendJson(res, 409, { error: 'There is already a location called ' + name + '.' });
-      let n = store.settings.next_loc; while (findLoc('L-' + pad(n, 3))) n++;
+      let n = store.settings.next_loc; while (findLoc(LOC_PREFIX + '-' + pad(n, 4))) n++;
       store.settings.next_loc = n + 1;
-      const loc = { code: 'L-' + pad(n, 3), name, area: s(b.area, 80), notes: s(b.notes, 400), created_at: new Date().toISOString(), created_by: by };
+      const loc = { code: LOC_PREFIX + '-' + pad(n, 4), name, area: s(b.area, 80), notes: s(b.notes, 400), created_at: new Date().toISOString(), created_by: by };
       store.locations.push(loc); save(); broadcast({ t: 'loc', loc });
       return sendJson(res, 200, { ok: true, loc });
     }
-    const lm = p.match(/^\/api\/locations\/(L-\d+)$/i);
+    const lm = p.match(/^\/api\/locations\/((?:LOC|L)-\d+)$/i);
     if (lm) {
       const loc = findLoc(lm[1].toUpperCase()); if (!loc) return sendJson(res, 404, { error: 'No such location.' });
       if (method === 'PATCH') {
@@ -736,9 +788,11 @@ const server = http.createServer(async (req, res) => {
     // Reserve a run of blank label codes for pre-printing
     if (method === 'POST' && p === '/api/reserve') {
       const b = await readBody(req); const count = num(b.count, 1, 1000, 30);
-      let start = store.settings.next_num; while (findItem(store.settings.prefix + '-' + pad(start, 4))) start++;
-      store.settings.next_num = start + count; save(); broadcast({ t: 'settings' });
-      return sendJson(res, 200, { ok: true, from: store.settings.prefix + '-' + pad(start, 4), count });
+      const d = deptByName(b.department); if (!d) return sendJson(res, 400, { error: 'Pick a department.' });
+      let start = store.settings.next[d.p] || 1; while (codeTaken(d.p + '-' + pad(start, 4))) start++;
+      store.settings.next[d.p] = start + count; save(); broadcast({ t: 'settings' });
+      const codes = []; for (let i = 0; i < count; i++) codes.push(d.p + '-' + pad(start + i, 4));
+      return sendJson(res, 200, { ok: true, from: codes[0], count, codes });
     }
 
     // ── Admin ──
@@ -760,11 +814,23 @@ const server = http.createServer(async (req, res) => {
       if (b.org != null && s(b.org, 80)) st.org = s(b.org, 80);
       // Restart numbering (only ever moves to a number no item or reserved sticker could clash with
       // when the inventory is empty; otherwise it can only move forward).
-      if (b.next_num != null) { const n = num(b.next_num, 1, 999999, st.next_num); if (!store.items.length || n > st.next_num) st.next_num = n; }
+      if (b.reset_numbers && !store.items.length && !store.removed.length) st.next = {};
       if (b.next_loc != null) { const n = num(b.next_loc, 1, 99999, st.next_loc); if (!store.locations.length || n > st.next_loc) st.next_loc = n; }
-      if (Array.isArray(b.categories)) {
-        const c = [...new Set(b.categories.map((x) => s(x, 60)).filter(Boolean))].slice(0, 40);
-        if (c.length) st.categories = c.includes('Other') ? c : c.concat('Other');
+      if (Array.isArray(b.departments)) {
+        // A department in use keeps its prefix; names, rooms and colours can change; new ones can be added.
+        const out = []; const seen = new Set();
+        for (const x of b.departments.slice(0, 40)) {
+          const pfx = s(x.p, 4).toUpperCase(); const name = s(x.name, 60);
+          if (!/^[A-Z]{2,4}$/.test(pfx) || pfx === LOC_PREFIX || !name || seen.has(pfx)) continue;
+          const color = /^#[0-9a-f]{6}$/i.test(x.color || '') ? x.color : '#616161';
+          seen.add(pfx); out.push({ p: pfx, name, room: s(x.room, 60), color });
+        }
+        const used = new Set(store.items.map((i) => prefixOf(i.code)));
+        const missing = [...used].filter((u) => !seen.has(u) && store.settings.departments.some((d) => d.p === u));
+        if (missing.length) return sendJson(res, 400, { error: 'Items still use ' + missing.join(', ') + '. Keep those departments.' });
+        if (!out.length) return sendJson(res, 400, { error: 'Keep at least one department.' });
+        for (const i of store.items) { const d = out.find((o) => o.p === prefixOf(i.code)); if (d) i.category = d.name; }
+        st.departments = out;
       }
       if (b.crew_key != null) { const k = s(b.crew_key, 40).toUpperCase(); if (k.length < 6) return sendJson(res, 400, { error: 'Crew code: at least 6 characters.' }); st.crew_key = k; st.crew_key_rotated = true; }
       if (b.admin_key != null) { const k = s(b.admin_key, 40).toUpperCase(); if (k.length < 8) return sendJson(res, 400, { error: 'Admin code: at least 8 characters.' }); st.admin_key = k; st.admin_key_rotated = true; setKeyCookie(res, k); }
@@ -776,28 +842,28 @@ const server = http.createServer(async (req, res) => {
       // rows: [{name, category, qty, location (name), color, size, …}] parsed client-side from CSV
       const b = await readBody(req, 4 * 1024 * 1024);
       if (!Array.isArray(b.rows)) return sendJson(res, 400, { error: 'Nothing to import.' });
-      let added = 0, locsMade = 0; const now = new Date().toISOString();
+      let added = 0, locsMade = 0, skipped = 0; const now = new Date().toISOString();
       for (const row of b.rows.slice(0, 5000)) {
         const name = s(row.name, 120); if (!name) continue;
         let locCode = '';
         const ln = s(row.location, 80);
         if (ln) {
           let loc = store.locations.find((l) => l.name.toLowerCase() === ln.toLowerCase() || l.code === ln.toUpperCase());
-          if (!loc) { let n = store.settings.next_loc; while (findLoc('L-' + pad(n, 3))) n++; store.settings.next_loc = n + 1;
-            loc = { code: 'L-' + pad(n, 3), name: ln, area: '', notes: '', created_at: now, created_by: by }; store.locations.push(loc); locsMade++; }
+          if (!loc) { let n = store.settings.next_loc; while (findLoc(LOC_PREFIX + '-' + pad(n, 4))) n++; store.settings.next_loc = n + 1;
+            loc = { code: LOC_PREFIX + '-' + pad(n, 4), name: ln, area: '', notes: '', created_at: now, created_by: by }; store.locations.push(loc); locsMade++; }
           locCode = loc.code;
         }
-        let code = s(row.code, 16).toUpperCase();
-        if (!CODE_RE.test(code) || findItem(code)) code = nextCode(); else bumpPastCode(code);
-        const item = { code, name, category: 'Other', qty: 1, status: 'Available', condition: '', location: '', sublocation: '', color: '', size: '', period: '', tags: '',
+        let code = normCode(row.code);
+        const dept = (code && deptByPrefix(prefixOf(code))) || deptByName(row.category) || deptByName(row.department);
+        if (!dept) { skipped++; continue; }
+        if (!code || prefixOf(code) !== dept.p || codeTaken(code)) code = nextCode(dept.p); else bumpPastCode(code);
+        const item = { code, name, category: dept.name, aliases: [], qty: 1, status: 'Available', condition: '', location: '', sublocation: '', color: '', size: '', period: '', tags: '',
           value: null, description: '', notes: '', holder: '', show: '', due: '', photos: [], history: [], created_at: now, created_by: by, updated_at: now, updated_by: by, last_seen: '' };
-        const cat = s(row.category, 60);
-        applyFields(item, Object.assign({}, row, { location: locCode, category: store.settings.categories.find((c) => c.toLowerCase() === cat.toLowerCase()) || (cat ? cat : 'Other') }));
-        if (!store.settings.categories.includes(item.category)) store.settings.categories.splice(store.settings.categories.length - 1, 0, item.category);
+        applyFields(item, Object.assign({}, row, { location: locCode }));
         log(item, by, 'Imported', ''); store.items.push(item); added++;
       }
       save(); broadcast({ t: 'reload' });
-      return sendJson(res, 200, { ok: true, added, locations: locsMade });
+      return sendJson(res, 200, { ok: true, added, locations: locsMade, skipped });
     }
 
     return sendJson(res, 404, { error: 'Not found' });

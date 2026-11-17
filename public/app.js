@@ -31,7 +31,28 @@
   }
   async function load() { D = await api('GET', '/api/data'); $('#title').textContent = D.settings.title; }
   function upsert(item) { const i = D.items.findIndex((x) => x.code === item.code); if (i >= 0) D.items[i] = item; else D.items.push(item); }
-  const item = (c) => D.items.find((x) => x.code === c);
+  const item = (c) => D.items.find((x) => x.code === c) || D.items.find((x) => (x.aliases || []).includes(c));
+  const depts = () => D.settings.departments;
+  const deptOf = (code) => depts().find((d) => d.p === String(code).split('-')[0]);
+  const deptByName = (n) => depts().find((d) => d.name === n || d.p === n);
+  const LOCP = 'LOC';
+  const LOC_COLOR = '#111111';
+  // "cost141" / "COST 141" / "cost-0141" → "COST-0141"
+  function normCode(v) {
+    const m = String(v || '').trim().toUpperCase().match(/^([A-Z]{1,4})[\s_-]*(\d{1,6})$/);
+    return m ? m[1] + '-' + String(Number(m[2])).padStart(4, '0') : '';
+  }
+  const isLocCode = (c) => /^(LOC|L)-/.test(c);
+  // QR content: an all-capitals URL so the QR can use its compact alphanumeric mode.
+  const qrUrl = (code) => (D.base + (isLocCode(code) ? '/L/' : '/I/') + code).toUpperCase();
+  function ink(hex) { // readable text colour on a band of `hex`
+    const n = parseInt(String(hex).slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+    return (0.299 * r + 0.587 * g + 0.114 * b) > 160 ? '#111' : '#fff';
+  }
+  function chip(code) {
+    const d = isLocCode(code) ? { p: LOCP, color: LOC_COLOR } : deptOf(code); if (!d) return '';
+    return '<span class="chip" style="background:' + esc(d.color) + ';color:' + ink(d.color) + (d.color.toLowerCase() === '#ffffff' ? ';border:1px solid #999' : '') + '">' + esc(d.p) + '</span>';
+  }
   const loc = (c) => D.locations.find((x) => x.code === c);
   const locName = (c) => (loc(c) || {}).name || '';
 
@@ -85,12 +106,15 @@
   const thumb = (it) => it.photos && it.photos[0] ? '<div class="th" style="background-image:url(/p/' + it.photos[0] + '_t.jpg)"></div>' : '<div class="th">▢</div>';
   function rowHtml(it, extra) {
     const where = locName(it.location);
-    const meta = [it.code, it.category, where, it.holder ? 'with ' + it.holder : '', it.qty > 1 ? '×' + it.qty : ''].filter(Boolean).join(' · ');
-    return '<a class="it" href="/i/' + esc(it.code) + '" data-nav>' + thumb(it) + '<div class="bd"><div class="nm">' + esc(it.name) + '</div><div class="mt">' + esc(meta) + '</div>' +
+    const meta = [it.code, where, it.holder ? 'with ' + it.holder : '', it.qty > 1 ? '×' + it.qty : ''].filter(Boolean).join(' · ');
+    return '<a class="it" href="/i/' + esc(it.code) + '" data-nav>' + thumb(it) + '<div class="bd"><div class="nm">' + chip(it.code) + ' ' + esc(it.name) + '</div><div class="mt">' + esc(meta) + (it.size ? ' · ' + esc(it.size) : '') + '</div>' +
       (extra || '') + '</div>' + pill(it.status) + '</a>';
   }
+  function qrMake(text) {
+    const q = qrcode(0, 'M'); q.addData(text, /^[0-9A-Z $%*+\-./:]+$/.test(text) ? 'Alphanumeric' : 'Byte'); q.make(); return q;
+  }
   function qrSvg(text, px) {
-    const q = qrcode(0, 'M'); q.addData(text); q.make();
+    const q = qrMake(text);
     return q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }).replace('<svg ', '<svg style="width:' + (px || 110) + 'px;height:' + (px || 110) + 'px" ');
   }
   function opts(list, sel, blank) {
@@ -121,10 +145,13 @@
   $('#whoBtn').onclick = () => go('/settings');
 
   // ── Router ─────────────────────────────────────────────────────────────────
+  let pinned = false; // a generated screen (sticker sheets) that live updates must not redraw
   function render(soft) {
+    if (soft && pinned) return;
+    pinned = false;
     const p = location.pathname.replace(/\/+$/, '') || '/';
     route = p;
-    const tab = p === '/' ? 'home' : p.split('/')[1];
+    const tab = p === '/' ? 'home' : p.split('/')[1].toLowerCase();
     $$('#tabbar a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab || (tab === 'i' && a.dataset.tab === 'browse') || (tab === 'l' && a.dataset.tab === 'locations')));
     let m;
     if (p === '/') return home();
@@ -135,9 +162,9 @@
     if (p === '/labels') return labels();
     if (p === '/settings') return settings();
     if (p === '/recent') return recent();
-    if ((m = p.match(/^\/i\/(.+)$/))) return itemPage(decodeURIComponent(m[1]).toUpperCase());
-    if ((m = p.match(/^\/l\/(.+)$/))) return locPage(decodeURIComponent(m[1]).toUpperCase());
-    if ((m = p.match(/^\/audit\/(.+)$/))) return audit(decodeURIComponent(m[1]).toUpperCase());
+    if ((m = p.match(/^\/i\/(.+)$/i))) return itemPage(normCode(decodeURIComponent(m[1])) || decodeURIComponent(m[1]).toUpperCase());
+    if ((m = p.match(/^\/l\/(.+)$/i))) return locPage(normCode(decodeURIComponent(m[1])) || decodeURIComponent(m[1]).toUpperCase());
+    if ((m = p.match(/^\/audit\/(.+)$/i))) return audit(normCode(decodeURIComponent(m[1])) || decodeURIComponent(m[1]).toUpperCase());
     view.innerHTML = '<div class="card">Page not found. <a href="/" data-nav>Home</a></div>';
   }
 
@@ -185,7 +212,7 @@
     view.innerHTML = '<h1>Items</h1>' +
       '<div class="search"><input id="bq" type="search" placeholder="Search name, color, size, tag, code…" value="' + esc(st.q) + '"></div>' +
       '<div class="filters">' +
-      '<select id="fc">' + opts(D.settings.categories, st.cat, 'All categories') + '</select>' +
+      '<select id="fc">' + opts(depts().map((d) => [d.name, d.p + ' · ' + d.name]), st.cat, 'All departments') + '</select>' +
       '<select id="fs">' + opts(D.statuses, st.status, 'Any status') + '</select>' +
       '<select id="fl">' + locOpts(st.loc).replace('— No location yet —', 'Any place') + '<option value="none"' + (st.loc === 'none' ? ' selected' : '') + '>No place set</option></select>' +
       '<select id="fp">' + opts([['none', 'No photo'], ['has', 'Has photo']], st.photo, 'Photos: any') + '</select>' +
@@ -231,6 +258,11 @@
   // ── Item page ──────────────────────────────────────────────────────────────
   function itemPage(code) {
     const it = item(code);
+    if (it && it.code !== code) { history.replaceState(null, '', '/i/' + it.code); toast(code + ' was re-stickered as ' + it.code); }
+    if (!it && !deptOf(code)) {
+      view.innerHTML = '<div class="card"><h1>Unknown sticker <span class="code">' + esc(code) + '</span></h1><p>“' + esc(code.split('-')[0]) + '” is not one of our department codes. ' +
+        'Department codes are: ' + depts().map((d) => '<b>' + esc(d.p) + '</b> ' + esc(d.name)).join(', ') + '.</p></div>'; return;
+    }
     if (!it) {
       const src = copyOf();
       view.innerHTML = '<div class="card"><h1>New sticker: <span class="code">' + esc(code) + '</span></h1><p>' +
@@ -239,7 +271,7 @@
     }
     const where = loc(it.location);
     view.innerHTML =
-      '<div class="row" style="justify-content:space-between;margin-bottom:8px"><span class="code muted">' + esc(it.code) + '</span>' + pill(it.status) + '</div>' +
+      '<div class="row" style="justify-content:space-between;margin-bottom:8px"><span>' + chip(it.code) + ' <span class="code">' + esc(it.code) + '</span></span>' + pill(it.status) + '</div>' +
       '<h1>' + esc(it.name) + (it.qty > 1 ? ' <span class="muted">×' + it.qty + '</span>' : '') + '</h1>' +
       (it.photos.length ? '<div class="photos">' + it.photos.map((p) => '<img src="/p/' + p + '.jpg" alt="" loading="lazy" data-pid="' + p + '">').join('') + '</div>'
         : '<label class="nophoto" for="ph">No photo yet — tap to take one</label>') +
@@ -251,7 +283,7 @@
       '<button class="btn blue" id="mv">Move it</button></div>' +
       '<div class="card"><dl class="facts">' +
       '<dt>Place</dt><dd>' + (where ? '<a href="/l/' + esc(where.code) + '" data-nav>' + esc(where.name) + '</a>' : '<span class="muted">Not set</span>') + (it.sublocation ? ' · ' + esc(it.sublocation) : '') + '</dd>' +
-      '<dt>Category</dt><dd>' + esc(it.category) + '</dd>' +
+      '<dt>Department</dt><dd>' + esc(it.category) + (deptOf(it.code) && deptOf(it.code).room ? ' <span class="muted">· ' + esc(deptOf(it.code).room) + '</span>' : '') + '</dd>' +
       (it.condition ? '<dt>Condition</dt><dd>' + esc(it.condition) + '</dd>' : '') +
       (it.color ? '<dt>Color</dt><dd>' + esc(it.color) + '</dd>' : '') +
       (it.size ? '<dt>Size</dt><dd>' + esc(it.size) + '</dd>' : '') +
@@ -265,8 +297,8 @@
       (it.status !== 'Missing' ? '<button class="btn alt" id="ms">Can\'t find it</button>' : '') + '</div></div>' +
       '<div class="card"><h3>More just like this one?</h3><p class="muted small">Each copy gets its own sticker and QR code. Details carry over; take each one\'s own photo.</p>' +
       '<div class="row"><button class="btn" id="cpy">⌗ Copy to next sticker</button><button class="btn alt" id="cpyN">Make several copies</button></div></div>' +
-      '<div class="card"><div class="qrbox">' + qrSvg(D.base + '/i/' + it.code) + '<div><b>Sticker</b><p class="muted small" style="margin:.3em 0 .6em">Lost or damaged sticker? Print a new one.</p>' +
-      '<div class="row"><button class="btn alt sm" id="pr">Print sticker</button><button class="btn alt sm" id="png">Save image</button></div></div></div></div>' +
+      '<div class="card"><div class="qrbox">' + qrSvg(qrUrl(it.code)) + '<div><b>Sticker</b><p class="muted small" style="margin:.3em 0 .6em">Lost or damaged sticker? Print a new one.</p>' +
+      '<div class="row"><button class="btn alt sm" id="pr">Print sticker</button><button class="btn alt sm" id="rc">Wrong department?</button></div></div></div></div>' +
       '<div class="card"><h3>History</h3><ul class="hist">' + it.history.map((h) => '<li><b>' + esc(h.action) + '</b>' + (h.detail ? ' — ' + esc(h.detail) : '') + '<br><span class="muted small">' + esc(h.by) + ' · ' + esc(when(h.at)) + '</span></li>').join('') + '</ul></div>' +
       (D.role === 'admin' ? '<button class="btn alt sm" id="del" style="color:var(--bad)">Remove from inventory</button>' : '');
     $('#addPh').onclick = () => $('#ph').click(); $('#addPhG').onclick = () => $('#phg').click();
@@ -282,7 +314,7 @@
     $('#cpyN').onclick = () => makeCopies(it);
     if ($('#ms')) $('#ms').onclick = async () => { if (!confirm('Mark ' + it.name + ' as missing?')) return; await act(it.code, { action: 'missing' }, 'Marked missing'); };
     $('#pr').onclick = () => printCodes([it.code]);
-    $('#png').onclick = () => savePng(it);
+    $('#rc').onclick = () => recode(it);
     if ($('#del')) $('#del').onclick = async () => {
       if (!confirm('Remove ' + it.name + ' (' + it.code + ') from the inventory? You can restore it from Settings.')) return;
       try { await api('DELETE', '/api/items/' + it.code); D.items = D.items.filter((x) => x.code !== it.code); toast('Removed'); go('/browse'); } catch (e) { toast(e.message, 'bad'); }
@@ -370,13 +402,17 @@
   function fieldsHtml(v) {
     const sticky = LS.get('sticky', {});
     v = Object.assign({ category: sticky.category || '', location: sticky.location || '', qty: 1, condition: '' }, v || {});
+    if (v.code && deptOf(v.code)) v.fixedDept = deptOf(v.code);
     return '<label>What is it? *<input id="f_name" required maxlength="120" placeholder="e.g. Red velvet Victorian gown" value="' + esc(v.name || '') + '"></label>' +
-      '<div class="grid2"><label>Category<select id="f_category">' + opts(v.category && !D.settings.categories.includes(v.category) ? D.settings.categories.concat(v.category) : D.settings.categories, v.category, 'Pick one') + '</select></label>' +
-      '<label>How many<input id="f_qty" type="number" inputmode="numeric" min="0" value="' + esc(v.qty) + '"></label></div>' +
+      (v.fixedDept ? '<label>Department<input value="' + esc(v.fixedDept.p + ' · ' + v.fixedDept.name) + '" disabled></label><input type="hidden" id="f_category" value="' + esc(v.fixedDept.name) + '">'
+        : '<label>Department *<select id="f_category" required>' + opts(depts().map((d) => [d.name, d.p + ' · ' + d.name]), v.category, 'Pick one') + '</select></label>') +
+      '<div class="grid2">' +
+      '<label>How many<input id="f_qty" type="number" inputmode="numeric" min="0" value="' + esc(v.qty) + '"></label>' +
+      '<label>Size<input id="f_size" placeholder="38S, M, 9½…" value="' + esc(v.size || '') + '"></label></div>' +
       '<label>Place<select id="f_location">' + locOpts(v.location) + '</select></label>' +
       '<details' + (v.color || v.size || v.period || v.notes || v.description || v.tags || v.value || v.condition || v.sublocation ? ' open' : '') + '><summary style="font-weight:700;margin:4px 0 12px;cursor:pointer">More details (optional)</summary>' +
       '<label>Spot within the place<input id="f_sublocation" placeholder="top shelf, left end…" value="' + esc(v.sublocation || '') + '"></label>' +
-      '<div class="grid2"><label>Color<input id="f_color" value="' + esc(v.color || '') + '"></label><label>Size<input id="f_size" placeholder="M, 40R, 6ft…" value="' + esc(v.size || '') + '"></label></div>' +
+      '<label>Color<input id="f_color" value="' + esc(v.color || '') + '"></label>' +
       '<div class="grid2"><label>Period / style<input id="f_period" placeholder="1920s, Victorian…" value="' + esc(v.period || '') + '"></label>' +
       '<label>Condition<select id="f_condition">' + opts(D.conditions, v.condition, '—') + '</select></label></div>' +
       '<label>Tags (words to search by)<input id="f_tags" placeholder="military, formal, Christmas…" value="' + esc(v.tags || '') + '"></label>' +
@@ -396,13 +432,14 @@
   function addForm(code, append, src) {
     editing = true;
     const pre = {}; if (src) COPY_FIELDS.forEach((k) => { if (src[k] != null && src[k] !== '') pre[k] = src[k]; });
+    if (code && deptOf(code)) pre.fixedDept = deptOf(code);
     const html = '<form class="card" id="af">' + (append ? '' : '<h1>Add an item</h1>') +
       (code ? '<p class="muted">Sticker <span class="code">' + esc(code) + '</span> will be attached to this item.</p>'
         : '<p class="muted small">No sticker yet? It gets the next number and you can print its sticker after saving. Have blank stickers? Use <b>Scan</b> on one instead.</p>') +
       '<input type="file" id="aph" accept="image/*" capture="environment" hidden>' +
       '<div id="aprev" class="nophoto" style="cursor:pointer">📷 Tap to take a photo (recommended)</div>' +
       fieldsHtml(pre) +
-      '<label class="check"><input type="checkbox" id="keep"' + (LS.get('keepOn', true) ? ' checked' : '') + '> Keep category &amp; place for the next item</label>' +
+      '<label class="check"><input type="checkbox" id="keep"' + (LS.get('keepOn', true) ? ' checked' : '') + '> Keep department &amp; place for the next item</label>' +
       '<button class="btn big" id="sv">Save item</button></form>';
     if (append) view.insertAdjacentHTML('beforeend', html); else view.innerHTML = html;
     let photo = null;
@@ -414,6 +451,7 @@
     };
     $('#af').onsubmit = async (e) => {
       e.preventDefault(); const b = readFields(view); if (code) b.code = code;
+      if (!code && !deptByName(b.category)) { toast('Pick a department.', 'bad'); return; }
       const keep = $('#keep').checked; LS.set('keepOn', keep);
       LS.set('sticky', keep ? { category: b.category, location: b.location } : {});
       $('#sv').disabled = true; $('#sv').textContent = 'Saving…';
@@ -441,6 +479,19 @@
       $('#nx', m).onclick = () => { close(); openScanner({ mode: 'go' }); };
       $('#cp', m).onclick = () => { close(); copyToSticker(it); };
       $('#na', m).onclick = () => { close(); go('/add'); };
+    });
+  }
+  function recode(it) {
+    modal('<h2>Move ' + esc(it.name) + ' to another department</h2><p class="muted">It gets a new sticker with the new department code. The old sticker ' + esc(it.code) + ' keeps working until you replace it.</p>' +
+      '<label>New department<select id="nd">' + opts(depts().filter((d) => d !== deptOf(it.code)).map((d) => [d.name, d.p + ' · ' + d.name]), '', 'Pick one') + '</select></label>' +
+      '<button class="btn big" id="go">Give it a new code</button><button class="btn alt big" data-close style="margin-top:8px">Cancel</button>',
+    (m, close) => {
+      $('#go', m).onclick = async () => {
+        const dn = $('#nd', m).value; if (!dn) return toast('Pick a department.', 'bad');
+        try { const r = await api('POST', '/api/items/' + it.code + '/recode', { department: dn }); await load(); close();
+          go('/i/' + r.item.code, true); toast('Now ' + r.item.code + '. Print and stick the new sticker.', 'good'); printCodes([r.item.code]); }
+        catch (er) { toast(er.message, 'bad'); }
+      };
     });
   }
   function copyToSticker(it) {
@@ -473,6 +524,7 @@
     $('#cx').onclick = () => { editing = false; render(); };
     $('#ef').onsubmit = async (e) => {
       e.preventDefault(); const b = readFields(view); const ch = {};
+      delete b.category; // the sticker sets the department; use "Wrong department?" to change it
       Object.keys(b).forEach((k) => { if (String(b[k] ?? '') !== String(it[k] ?? '')) ch[k] = b[k]; });
       try { if (Object.keys(ch).length) { const r = await api('PATCH', '/api/items/' + it.code, ch); upsert(r.item); } editing = false; toast('Saved', 'good'); render(); }
       catch (er) { toast(er.message, 'bad'); }
@@ -555,10 +607,10 @@
   let scanner = null;
   function parseScan(text) {
     text = String(text || '').trim();
-    let m = text.match(/\/(i|l)\/([A-Za-z]{1,4}-\d{1,6})(?:[/?#]|$)/);
-    if (m) return { kind: m[1] === 'l' ? 'loc' : 'item', code: m[2].toUpperCase() };
-    m = text.match(/^([A-Za-z]{1,4}-\d{1,6})$/);
-    if (m) return { kind: /^L-/i.test(m[1]) ? 'loc' : 'item', code: m[1].toUpperCase() };
+    let m = text.match(/\/(i|l)\/([A-Za-z]{1,4}-\d{1,6})(?:[/?#]|$)/i);
+    if (m) { const c = normCode(m[2]); return { kind: m[1].toLowerCase() === 'l' || isLocCode(c) ? 'loc' : 'item', code: c }; }
+    const c = normCode(text);
+    if (c) return { kind: isLocCode(c) ? 'loc' : 'item', code: c };
     return null;
   }
   function loadJsQR() {
@@ -652,7 +704,19 @@
   }
 
   // ── Labels ─────────────────────────────────────────────────────────────────
+  // Printers. The Liene PixCut S1 prints only from its phone app (Bluetooth), on 4×7"
+  // sticker media with a 3.9×6.7" printable area at 300 dpi, so we hand it ready-made
+  // sheet images: transparent background, each sticker a separate shape with a gap so
+  // the cutter can cut round each one.
+  const PIX = { W: 1170, H: 2010, DPI: 300 };
+  const PIX_LAYOUTS = {
+    std:   { name: 'Standard 1.8 × 0.95 in — 12 per sheet', w: 540, h: 285, cols: 2, rows: 6 },
+    small: { name: 'Small square 1.15 in — 15 per sheet (props, jewelry)', w: 345, h: 345, cols: 3, rows: 5 },
+    big:   { name: 'Large 3.6 × 1.9 in — 3 per sheet (racks, shelves, bins)', w: 1080, h: 570, cols: 1, rows: 3 },
+  };
+  function printer() { return LS.get('printer', 'pixcut'); }
   function printCodes(codes, kind) {
+    if (printer() === 'pixcut') return pixcut(codes, kind === 'locations' || codes.every(isLocCode) ? 'big' : LS.get('pixLayout', 'std'));
     const size = LS.get('labelSize', '2x1');
     const f = document.createElement('form'); f.method = 'post'; f.action = '/print';
     [['size', size], ['kind', kind || 'items'], ['codes', codes.join(',')]].forEach(([n, v]) => {
@@ -660,42 +724,123 @@
     });
     document.body.appendChild(f); f.submit();
   }
-  function savePng(it) {
-    const q = qrcode(0, 'M'); q.addData(D.base + '/i/' + it.code); q.make();
-    const n = q.getModuleCount(), cell = 10, m = 2, W = (n + 2 * m) * cell, H = W + 120;
-    const c = document.createElement('canvas'); c.width = Math.max(W, 600); c.height = H; const x = c.getContext('2d');
-    x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, H); x.fillStyle = '#000';
-    const ox = (c.width - W) / 2;
-    for (let r = 0; r < n; r++) for (let k = 0; k < n; k++) if (q.isDark(r, k)) x.fillRect(ox + (k + m) * cell, (r + m) * cell, cell, cell);
-    x.textAlign = 'center'; x.font = 'bold 54px Arial'; x.fillText(it.code, c.width / 2, W + 52);
-    x.font = 'bold 30px Arial'; x.fillText(it.name.slice(0, 34), c.width / 2, W + 98);
-    c.toBlob((b) => {
-      const f = new File([b], it.code + '.png', { type: 'image/png' });
-      if (navigator.canShare && navigator.canShare({ files: [f] })) navigator.share({ files: [f], title: it.code }).catch(() => {});
-      else { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = it.code + '.png'; a.click(); }
-    });
+  function rrect(x, X, Y, w, h, r) { x.beginPath(); x.moveTo(X + r, Y); x.arcTo(X + w, Y, X + w, Y + h, r); x.arcTo(X + w, Y + h, X, Y + h, r); x.arcTo(X, Y + h, X, Y, r); x.arcTo(X, Y, X + w, Y, r); x.closePath(); }
+  function fitText(x, text, maxW, size, weight) {
+    let s = size; do { x.font = (weight || 'bold') + ' ' + s + 'px Arial, Helvetica, sans-serif'; s -= 2; } while (x.measureText(text).width > maxW && s > 12);
+  }
+  function wrap(x, text, maxW, maxLines) {
+    const words = String(text).split(/\s+/); const lines = []; let cur = '';
+    for (const w of words) { const t = cur ? cur + ' ' + w : w; if (x.measureText(t).width <= maxW) cur = t; else { if (cur) lines.push(cur); cur = w; } if (lines.length === maxLines) break; }
+    if (lines.length < maxLines && cur) lines.push(cur);
+    if (lines.length === maxLines && words.join(' ') !== lines.join(' ')) { let l = lines[maxLines - 1]; while (x.measureText(l + '…').width > maxW && l.length) l = l.slice(0, -1); lines[maxLines - 1] = l + '…'; }
+    return lines;
+  }
+  function drawSticker(x, X, Y, L, code) {
+    const isL = isLocCode(code), d = isL ? { p: LOCP, name: 'Location', room: '', color: LOC_COLOR } : (deptOf(code) || { p: code.split('-')[0], name: '', room: '', color: '#616161' });
+    const thing = isL ? loc(code) : item(code);
+    const w = L.w, h = L.h, r = 26, pad = 14;
+    x.save(); rrect(x, X, Y, w, h, r); x.fillStyle = '#fff'; x.fill(); x.clip();
+    const small = L === PIX_LAYOUTS.small;
+    const band = small ? 54 : L === PIX_LAYOUTS.big ? 96 : 62;
+    // QR: on wide stickers it fills the full height on the left (biggest possible = easiest scan);
+    // the department band runs across the rest of the top. Square stickers: band on top, QR below.
+    const q = qrMake(qrUrl(code)); const n = q.getModuleCount() + 4;
+    const avail = small ? h - band - 70 : h - pad * 2;
+    const cell = Math.floor(avail / n); const qs = cell * n;
+    const qx = small ? X + (w - qs) / 2 : X + pad, qy = small ? Y + band + 8 : Y + (h - qs) / 2;
+    const bx = small ? X : qx + qs + 6;
+    x.fillStyle = d.color; x.fillRect(bx, Y, X + w - bx, band);
+    if (d.color.toLowerCase() === '#ffffff') { x.fillStyle = '#111'; x.fillRect(bx, Y + band - 4, X + w - bx, 4); }
+    x.fillStyle = ink(d.color); x.textBaseline = 'middle';
+    const bw = X + w - bx;
+    fitText(x, d.p, small ? bw * 0.6 : bw * 0.45, band * 0.7); x.textAlign = small ? 'center' : 'left';
+    x.fillText(d.p, small ? X + w / 2 : bx + 14, Y + band / 2 + 2);
+    if (L === PIX_LAYOUTS.big) { const sub = isL ? 'LOCATION' : (d.room || d.name).toUpperCase(); fitText(x, sub, bw * 0.5, band * 0.34); x.textAlign = 'right'; x.fillText(sub, X + w - pad - 6, Y + band / 2 + 2); }
+    x.fillStyle = '#000';
+    for (let rr = 0; rr < n - 4; rr++) for (let c = 0; c < n - 4; c++) if (q.isDark(rr, c)) x.fillRect(qx + (c + 2) * cell, qy + (rr + 2) * cell, cell, cell);
+    x.fillStyle = '#111'; x.textBaseline = 'alphabetic';
+    if (small) { fitText(x, code, w - 24, 46); x.textAlign = 'center'; x.fillText(code, X + w / 2, Y + h - 18); }
+    else {
+      const tx = qx + qs + 16, tw = X + w - pad - tx; x.textAlign = 'left';
+      fitText(x, code, tw, L === PIX_LAYOUTS.big ? 96 : 58); let ty = Y + band + (L === PIX_LAYOUTS.big ? 92 : 54); x.fillText(code, tx, ty);
+      if (thing) {
+        const nm = thing.name || ''; x.font = 'bold ' + (L === PIX_LAYOUTS.big ? 52 : 28) + 'px Arial, Helvetica, sans-serif';
+        for (const line of wrap(x, nm, tw, L === PIX_LAYOUTS.big ? 4 : 3)) { ty += L === PIX_LAYOUTS.big ? 62 : 33; x.fillText(line, tx, ty); }
+        if (!isL && thing.size) { x.font = '900 ' + 34 + 'px Arial, Helvetica, sans-serif'; ty += 44; x.fillText('Size ' + thing.size, tx, Math.min(ty, Y + h - 16)); }
+      } else if (!isL) { x.font = 'bold 24px Arial, Helvetica, sans-serif'; x.fillStyle = '#555'; x.fillText(d.name, tx, ty + 36); x.fillText('Scan to add', tx, ty + 66); }
+    }
+    x.restore();
+    rrect(x, X + 1, Y + 1, w - 2, h - 2, r); x.strokeStyle = 'rgba(0,0,0,.18)'; x.lineWidth = 2; x.stroke();
+  }
+  function pixSheets(codes, layout) {
+    const L = PIX_LAYOUTS[layout] || PIX_LAYOUTS.std, per = L.cols * L.rows, out = [];
+    const gx = (PIX.W - L.cols * L.w) / (L.cols + 1), gy = (PIX.H - L.rows * L.h) / (L.rows + 1);
+    for (let s = 0; s < codes.length; s += per) {
+      const c = document.createElement('canvas'); c.width = PIX.W; c.height = PIX.H; const x = c.getContext('2d');
+      codes.slice(s, s + per).forEach((code, i) => {
+        const col = i % L.cols, row = Math.floor(i / L.cols);
+        drawSticker(x, Math.round(gx + col * (L.w + gx)), Math.round(gy + row * (L.h + gy)), L, code);
+      });
+      out.push(c);
+    }
+    return out;
+  }
+  function pixcut(codes, layout) {
+    editing = false;
+    pinned = true;
+    const L = PIX_LAYOUTS[layout] || PIX_LAYOUTS.std;
+    const sheets = pixSheets(codes, layout);
+    const name = (i) => 'rialto-stickers-' + codes[0] + (sheets.length > 1 ? '-sheet' + (i + 1) : '') + '.png';
+    view.innerHTML = '<h1>PixCut sticker sheets</h1>' +
+      '<div class="card"><p><b>' + codes.length + ' sticker' + (codes.length === 1 ? '' : 's') + '</b> on <b>' + sheets.length + ' sheet' + (sheets.length === 1 ? '' : 's') + '</b> · ' + esc(L.name) + '</p>' +
+      '<label>Layout<select id="lay">' + opts(Object.entries(PIX_LAYOUTS).map(([k, v]) => [k, v.name]), layout) + '</select></label>' +
+      '<div class="row"><button class="btn big" id="shareAll">Save / share to this phone</button></div>' +
+      '<ol class="small" style="margin:12px 0 0;padding-left:22px"><li>Tap <b>Save / share</b> and choose <b>Save Image</b> (iPhone) or <b>Save to Photos / Gallery</b>.</li>' +
+      '<li>Open the <b>Liene</b> app, start a sticker print and pick the sheet image from your photos.</li>' +
+      '<li>Choose the 4 × 7 sticker paper, keep it at full size (do not crop or scale), and let the app cut around each sticker.</li>' +
+      '<li>First time: print ONE sheet and scan a sticker with your camera before printing the rest.</li></ol></div>' +
+      sheets.map((c, i) => '<div class="card"><p class="small muted">Sheet ' + (i + 1) + ' of ' + sheets.length + '</p><img src="' + c.toDataURL('image/png') + '" style="width:100%;max-width:360px;display:block;margin:auto;background:repeating-conic-gradient(#eee 0 25%,#fff 0 50%) 0 0/20px 20px;border-radius:8px">' +
+        '<div class="row" style="margin-top:8px"><a class="btn alt sm" download="' + esc(name(i)) + '" href="' + c.toDataURL('image/png') + '">Download sheet ' + (i + 1) + '</a></div></div>').join('');
+    $('#lay').onchange = (e) => { if (e.target.value !== 'big') LS.set('pixLayout', e.target.value); pixcut(codes, e.target.value); };
+    $('#shareAll').onclick = async () => {
+      const files = await Promise.all(sheets.map((c, i) => new Promise((ok) => c.toBlob((b) => ok(new File([b], name(i), { type: 'image/png' }))))));
+      if (navigator.canShare && navigator.canShare({ files })) { try { await navigator.share({ files, title: 'Rialto stickers' }); } catch (e) { /* cancelled */ } }
+      else files.forEach((f) => { const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove(); });
+    };
+    window.scrollTo(0, 0);
   }
   function labels() {
-    const size = LS.get('labelSize', '2x1');
-    const sizeSel = '<label>Sticker size<select id="sz">' + opts(Object.entries(D.sizes), size) + '</select></label>';
+    const pr = printer();
     view.innerHTML = '<h1>Print stickers</h1>' +
-      '<div class="card">' + sizeSel + '<p class="muted small">Thermal sticker printer: pick its roll size, then Print and choose the sticker printer. Phone-only sticker printer (Phomemo, Niimbot…): open an item and tap <b>Save image</b>, then print the image from the printer\'s app.</p></div>' +
-      '<form class="card" id="bk"><h2>1 · Blank stickers (fastest way to inventory)</h2>' +
-      '<p>Print a roll of numbered stickers first. Volunteers stick one on each item, scan it, and fill in the item. No typing codes.</p>' +
-      '<label>How many<input id="bn" type="number" min="1" max="1000" value="100" inputmode="numeric"></label>' +
-      '<button class="btn big">Print blank stickers</button><p class="muted small">Next number: ' + esc(D.settings.prefix) + '-' + String(D.settings.next_num).padStart(4, '0') + '. These numbers are reserved so they never repeat.</p></form>' +
+      '<div class="card"><label>Sticker printer<select id="prn">' + opts([['pixcut', 'Liene PixCut S1 (phone app)'], ['other', 'Other printer (roll or sheets)']], pr) + '</select></label>' +
+      (pr === 'pixcut' ? '<label>Sticker layout<select id="lay">' + opts(Object.entries(PIX_LAYOUTS).filter(([k]) => k !== 'big').map(([k, v]) => [k, v.name]), LS.get('pixLayout', 'std')) + '</select></label>' +
+        '<p class="muted small">You get ready-to-print sheet pictures. Save them to the phone and print from the Liene app. Place stickers always use the large layout.</p>'
+        : '<label>Sticker size<select id="sz">' + opts(Object.entries(D.sizes), LS.get('labelSize', '2x1')) + '</select></label>') + '</div>' +
+      '<form class="card" id="bk"><h2>1 · Blank stickers for a department</h2>' +
+      '<p>Print numbered stickers first. Volunteers stick one on each item, scan it, and fill it in. Nobody types a code.</p>' +
+      '<label>Department<select id="bd" required>' + opts(depts().map((d) => [d.name, d.p + ' · ' + d.name]), LS.get('lastDept', ''), 'Pick one') + '</select></label>' +
+      '<label>How many<input id="bn" type="number" min="1" max="1000" value="' + (pr === 'pixcut' ? 12 : 100) + '" inputmode="numeric"></label>' +
+      '<p class="muted small" id="nxt"></p><button class="btn big">Print blank stickers</button></form>' +
       '<div class="card"><h2>2 · Stickers for items already entered</h2>' +
-      '<label>Category<select id="lc">' + opts(D.settings.categories, '', 'All categories') + '</select></label>' +
+      '<label>Department<select id="lc">' + opts(depts().map((d) => [d.name, d.p + ' · ' + d.name]), '', 'All departments') + '</select></label>' +
       '<label>Added<select id="ld">' + opts([['today', 'Today'], ['7', 'Last 7 days'], ['all', 'Any time']], 'today') + '</select></label>' +
       '<button class="btn big" id="lp">Print these</button><p class="muted small">Or search on the Items page and use "Print stickers for these".</p></div>' +
-      '<div class="card"><h2>3 · Place stickers</h2><p>One per rack, shelf, bin or room. Print them big (4×6 or 2×2) so they are easy to scan.</p>' +
+      '<div class="card"><h2>3 · Place stickers</h2><p>One per rack, shelf, bin or room. Black band, LOC code, the place name in big letters.</p>' +
       '<button class="btn big" id="lo"' + (D.locations.length ? '' : ' disabled') + '>Print all ' + D.locations.length + ' place stickers</button></div>' +
-      '<div class="card"><h2>Reprint a range</h2><div class="grid2"><label>From<input id="rf" placeholder="R-0001"></label><label>How many<input id="rc" type="number" value="30"></label></div><button class="btn alt big" id="rp">Reprint</button></div>';
-    $('#sz').onchange = (e) => LS.set('labelSize', e.target.value);
+      '<div class="card"><h2>Reprint a range</h2><div class="grid2"><label>From<input id="rf" placeholder="COST-0001" autocapitalize="characters"></label><label>How many<input id="rc" type="number" value="12"></label></div><button class="btn alt big" id="rp">Reprint</button></div>' +
+      '<div class="card"><h2>Department codes</h2><table style="width:100%;border-collapse:collapse;font-size:.92rem">' +
+      depts().map((d) => '<tr><td style="padding:4px 6px">' + chip(d.p + '-1') + '</td><td style="padding:4px 6px">' + esc(d.name) + '</td><td class="muted" style="padding:4px 6px">' + esc(d.room || '') + '</td></tr>').join('') +
+      '<tr><td style="padding:4px 6px">' + chip('LOC-1') + '</td><td style="padding:4px 6px">Places (racks, shelves, bins)</td><td></td></tr></table>' +
+      '<p class="muted small">Not tagged: paint, tape, lamps, batteries, makeup, fabric yardage. Tag the shelf or bin they live in.</p></div>';
+    const showNext = () => { const d = deptByName($('#bd').value); $('#nxt').textContent = d ? 'Next ' + d.p + ' number: ' + d.p + '-' + String((D.settings.next || {})[d.p] || 1).padStart(4, '0') + '. Numbers are reserved so they never repeat.' : ''; };
+    $('#bd').onchange = () => { LS.set('lastDept', $('#bd').value); showNext(); }; showNext();
+    $('#prn').onchange = (e) => { LS.set('printer', e.target.value); labels(); };
+    if ($('#lay')) $('#lay').onchange = (e) => LS.set('pixLayout', e.target.value);
+    if ($('#sz')) $('#sz').onchange = (e) => LS.set('labelSize', e.target.value);
     $('#bk').onsubmit = async (e) => {
-      e.preventDefault(); const n = Number($('#bn').value) || 0; if (n < 1) return;
-      if (!confirm('Reserve and print ' + n + ' blank stickers?')) return;
-      try { const r = await api('POST', '/api/reserve', { count: n }); location.href = '/print?size=' + LS.get('labelSize', '2x1') + '&from=' + r.from + '&count=' + r.count; }
+      e.preventDefault(); const n = Number($('#bn').value) || 0; const dn = $('#bd').value; if (n < 1 || !dn) return toast('Pick a department and a number.', 'bad');
+      if (!confirm('Reserve and print ' + n + ' blank ' + deptByName(dn).p + ' stickers?')) return;
+      try { const r = await api('POST', '/api/reserve', { count: n, department: dn }); D.settings.next = Object.assign({}, D.settings.next, { [deptByName(dn).p]: Number(r.codes[r.codes.length - 1].split('-')[1]) + 1 }); printCodes(r.codes); }
       catch (er) { toast(er.message, 'bad'); }
     };
     $('#lp').onclick = () => {
@@ -704,7 +849,11 @@
       if (!c.length) return toast('No items match.'); printCodes(c);
     };
     $('#lo').onclick = () => printCodes(D.locations.map((l) => l.code), 'locations');
-    $('#rp').onclick = () => { const f = $('#rf').value.trim().toUpperCase(); if (!/^[A-Z]{1,4}-\d+$/.test(f)) return toast('Use a code like R-0001', 'bad'); location.href = '/print?size=' + LS.get('labelSize', '2x1') + '&from=' + f + '&count=' + (Number($('#rc').value) || 30); };
+    $('#rp').onclick = () => {
+      const f = normCode($('#rf').value); if (!f) return toast('Use a code like COST-0001', 'bad');
+      const [pfx, n0] = f.split('-'); const c = []; for (let i = 0; i < (Number($('#rc').value) || 12); i++) c.push(pfx + '-' + String(Number(n0) + i).padStart(4, '0'));
+      printCodes(c, pfx === LOCP ? 'locations' : 'items');
+    };
   }
 
   // ── Settings ───────────────────────────────────────────────────────────────
@@ -727,24 +876,26 @@
       '<form class="card" id="kf"><h3>Codes</h3><label>Crew code (everyone)<input id="ck" value="' + esc(st.crew_key) + '"></label>' +
       '<label>Admin code (you)<input id="adk" value="' + esc(st.admin_key) + '"></label><p class="muted small">Changing the crew code signs everyone out until they use the new one.</p><button class="btn alt">Save codes</button></form>' +
       '<form class="card" id="sf2"><h3>Names</h3><label>App title<input id="tt" value="' + esc(st.title) + '"></label><label>Organization (printed on stickers)<input id="og" value="' + esc(st.org) + '"></label>' +
-      '<label>Categories (one per line)<textarea id="cats" rows="8">' + esc(st.categories.join('\n')) + '</textarea></label><button class="btn alt">Save</button></form>' +
-      '<div class="card"><h3>Import from a spreadsheet</h3><p class="muted small">CSV with a header row. Columns it understands: name, category, qty, location, color, size, period, condition, tags, description, notes, value, code. New places are created automatically.</p>' +
+      '<label>Departments — one per line: CODE | Name | Room | #colour<textarea id="cats" rows="10" style="font-family:monospace;font-size:.85rem">' +
+        esc(st.departments.map((d) => [d.p, d.name, d.room || '', d.color].join(' | ')).join('\n')) + '</textarea></label>' +
+      '<p class="muted small">Codes are 2–4 letters. A department that has items keeps its code.</p><button class="btn alt">Save</button></form>' +
+      '<div class="card"><h3>Import from a spreadsheet</h3><p class="muted small">CSV with a header row. Columns it understands: name, department (code like COST or the name), qty, location, color, size, period, condition, tags, description, notes, value, code. New places are created automatically.</p>' +
       '<input type="file" id="imp" accept=".csv,text/csv"><p id="impMsg" class="muted small"></p></div>' +
       '<div class="card"><h3>Removed items</h3>' + (D.removed.length ? '<ul class="hist">' + D.removed.slice(0, 50).map((r) => '<li><b>' + esc(r.name) + '</b> <span class="code">' + esc(r.code) + '</span> <button class="btn alt sm" data-restore="' + esc(r.code) + '">Restore</button></li>').join('') + '</ul>' : '<p class="muted">None.</p>') + '</div>';
   }
   function wireAdmin() {
     $('#cp').onclick = () => { const i = $('#jl'); i.select(); (navigator.clipboard ? navigator.clipboard.writeText(i.value) : Promise.reject()).then(() => toast('Copied', 'good'), () => document.execCommand('copy')); };
     $('#kf').onsubmit = async (e) => { e.preventDefault(); try { await api('POST', '/api/settings', { crew_key: $('#ck').value, admin_key: $('#adk').value }); await load(); render(); toast('Codes saved', 'good'); } catch (er) { toast(er.message, 'bad'); } };
-    $('#sf2').onsubmit = async (e) => { e.preventDefault(); try { await api('POST', '/api/settings', { title: $('#tt').value, org: $('#og').value, categories: $('#cats').value.split('\n') }); await load(); render(); toast('Saved', 'good'); } catch (er) { toast(er.message, 'bad'); } };
+    $('#sf2').onsubmit = async (e) => { e.preventDefault(); try { await api('POST', '/api/settings', { title: $('#tt').value, org: $('#og').value, departments: $('#cats').value.split('\n').map((l) => l.split('|').map((s) => s.trim())).filter((a) => a[0]).map(([p, name, room, color]) => ({ p, name, room, color })) }); await load(); render(); toast('Saved', 'good'); } catch (er) { toast(er.message, 'bad'); } };
     $$('[data-restore]').forEach((b) => b.onclick = async () => { try { await api('POST', '/api/restore', { code: b.dataset.restore }); await load(); render(); toast('Restored', 'good'); } catch (er) { toast(er.message, 'bad'); } });
     $('#imp').onchange = async (e) => {
       const f = e.target.files[0]; if (!f) return;
       const rows = parseCsv(await f.text()); if (rows.length < 2) return toast('That file has no rows.', 'bad');
       const head = rows[0].map((h) => h.trim().toLowerCase().replace(/[^a-z]/g, ''));
-      const alias = { item: 'name', itemname: 'name', description: 'description', quantity: 'qty', count: 'qty', place: 'location', where: 'location', type: 'category', colour: 'color' };
+      const alias = { item: 'name', itemname: 'name', description: 'description', quantity: 'qty', count: 'qty', place: 'location', where: 'location', type: 'category', category: 'category', department: 'category', dept: 'category', colour: 'color' };
       const objs = rows.slice(1).filter((r) => r.some((c) => c.trim())).map((r) => { const o = {}; head.forEach((h, i) => { o[alias[h] || h] = r[i] || ''; }); return o; });
       if (!confirm('Import ' + objs.length + ' rows?')) return;
-      try { const r = await api('POST', '/api/import', { rows: objs }); $('#impMsg').textContent = 'Added ' + r.added + ' items and ' + r.locations + ' new places.'; await load(); toast('Imported ' + r.added, 'good'); }
+      try { const r = await api('POST', '/api/import', { rows: objs }); $('#impMsg').textContent = 'Added ' + r.added + ' items and ' + r.locations + ' new places.' + (r.skipped ? ' Skipped ' + r.skipped + ' rows with no recognisable department.' : ''); await load(); toast('Imported ' + r.added, 'good'); }
       catch (er) { toast(er.message, 'bad'); }
     };
   }
