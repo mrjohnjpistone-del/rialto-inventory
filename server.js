@@ -698,6 +698,10 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req); const st = store.settings;
       if (b.title != null && s(b.title, 80)) st.title = s(b.title, 80);
       if (b.org != null && s(b.org, 80)) st.org = s(b.org, 80);
+      // Restart numbering (only ever moves to a number no item or reserved sticker could clash with
+      // when the inventory is empty; otherwise it can only move forward).
+      if (b.next_num != null) { const n = num(b.next_num, 1, 999999, st.next_num); if (!store.items.length || n > st.next_num) st.next_num = n; }
+      if (b.next_loc != null) { const n = num(b.next_loc, 1, 99999, st.next_loc); if (!store.locations.length || n > st.next_loc) st.next_loc = n; }
       if (Array.isArray(b.categories)) {
         const c = [...new Set(b.categories.map((x) => s(x, 60)).filter(Boolean))].slice(0, 40);
         if (c.length) st.categories = c.includes('Other') ? c : c.concat('Other');
