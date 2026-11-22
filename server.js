@@ -387,6 +387,17 @@ function applyFields(item, b) {
   if (Object.prototype.hasOwnProperty.call(b, 'qty')) {
     const q = num(b.qty, 0, 100000, 1); if (item.qty !== q) { item.qty = q; changed.push('qty'); }
   }
+  // Characters: which show + character this item belongs to (an item can serve several).
+  if (Object.prototype.hasOwnProperty.call(b, 'roles')) {
+    const seen = new Set(); const roles = [];
+    for (const r of Array.isArray(b.roles) ? b.roles.slice(0, 20) : []) {
+      const show = s(r && r.show, 120), character = s(r && r.character, 80);
+      if (!character) continue;
+      const k = (show + '|' + character).toLowerCase(); if (seen.has(k)) continue;
+      seen.add(k); roles.push({ show, character });
+    }
+    if (JSON.stringify(item.roles || []) !== JSON.stringify(roles)) { item.roles = roles; changed.push('characters'); }
+  }
   if (Object.prototype.hasOwnProperty.call(b, 'value')) {
     const v = money(b.value); if (item.value !== v) { item.value = v; changed.push('value'); }
   }
@@ -406,7 +417,7 @@ function serveStatic(res, rel) {
     'Cache-Control': rel.startsWith('vendor/') ? 'public, max-age=604800' : 'no-cache' });
   res.end(data); return true;
 }
-const APP_ROUTES = /^\/(|i\/[^/]+|l\/[^/]+|add|browse|scan|locations|labels|settings|audit\/[^/]+|recent)$/i;
+const APP_ROUTES = /^\/(|i\/[^/]+|l\/[^/]+|add|browse|scan|locations|labels|settings|audit\/[^/]+|recent|characters|set)$/i;
 
 // ── QR → SVG (server side, for print pages) ──────────────────────────────────
 function qrSvg(text) {
@@ -655,10 +666,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === 'GET' && p === '/api/export.csv') {
-      const cols = ['code', 'name', 'category', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'period', 'tags', 'value', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
+      const cols = ['code', 'name', 'category', 'characters', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'period', 'tags', 'value', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
       const q = (v) => { let t = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
       const base = baseUrl(req);
       const rows = store.items.map((i) => cols.map((c) => c === 'location_name' ? ((findLoc(i.location) || {}).name || '') :
+        c === 'characters' ? (i.roles || []).map((r) => (r.show ? r.show + ': ' : '') + r.character).join('; ') :
         c === 'photos' ? i.photos.map((x) => base + '/p/' + x + '.jpg').join(' ') : i[c]).map(q).join(','));
       res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="rialto-inventory-' + new Date().toISOString().slice(0, 10) + '.csv"' });
       return res.end('﻿' + cols.join(',') + '\n' + rows.join('\n'));

@@ -11,7 +11,8 @@ Usage (Python 3.10+, Pillow, segno):
   python -X utf8 tools/pixcut_export.py --dept COST              # every COST item
   python -X utf8 tools/pixcut_export.py --codes COST-0001,COST-0002
   python -X utf8 tools/pixcut_export.py --locations              # all place stickers (large)
-  python -X utf8 tools/pixcut_export.py --demo                   # sample stickers, no login needed
+  python -X utf8 tools/pixcut_export.py --blank COST --count 20      # NEW blank stickers, rounded up to 24 (full sheets)
+  python -X utf8 tools/pixcut_export.py --demo                  # sample stickers, no login needed
 Options: --layout std|small|big   --out <folder>
 
 Sign-in: the master admin code is read from env RIALTO_ADMIN_KEY or from
@@ -57,7 +58,16 @@ def fetch_data():
         cookie = r.headers.get('Set-Cookie').split(';')[0]
     req = urllib.request.Request(BASE + '/api/data', headers={'Cookie': cookie})
     with urllib.request.urlopen(req, timeout=90) as r:
-        return json.load(r)
+        d = json.load(r)
+    d['_cookie'] = cookie
+    return d
+
+
+def reserve(cookie, department, count):
+    req = urllib.request.Request(BASE + '/api/reserve', data=json.dumps({'department': department, 'count': count}).encode(),
+                                 headers={'Content-Type': 'application/json', 'x-rialto': '1', 'Cookie': cookie}, method='POST')
+    with urllib.request.urlopen(req, timeout=90) as r:
+        return json.load(r)['codes']
 
 
 def hex_rgb(h):
@@ -184,8 +194,11 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument('--codes'); g.add_argument('--dept'); g.add_argument('--today', action='store_true')
     g.add_argument('--locations', action='store_true'); g.add_argument('--demo', action='store_true')
+    g.add_argument('--blank', metavar='DEPT', help='reserve and print NEW blank stickers for a department, e.g. COST')
+    ap.add_argument('--count', type=int, default=12, help='with --blank: how many (rounded UP to full sheets)')
     ap.add_argument('--layout', choices=list(LAYOUTS), default=None)
     ap.add_argument('--out', default=None)
+    ap.add_argument('--no-fill', action='store_true', help='allow a partial last sheet (normally filled with blanks)')
     a = ap.parse_args()
 
     if a.demo:
@@ -198,7 +211,15 @@ def main():
     else:
         D = fetch_data()
         items = D['items']
-        if a.codes:
+        if a.blank:
+            dep = next((d for d in D['settings']['departments'] if d['p'] == a.blank.upper()), None)
+            if not dep:
+                sys.exit('No department with code ' + a.blank.upper())
+            per = LAYOUTS[a.layout or 'std']['cols'] * LAYOUTS[a.layout or 'std']['rows']
+            n = -(-max(1, a.count) // per) * per          # round UP to whole sheets
+            codes = reserve(D['_cookie'], dep['name'], n)
+            print('Reserved %d blank %s stickers (%s to %s)%s' % (n, dep['p'], codes[0], codes[-1], '' if n == a.count else ', rounded up from %d' % a.count))
+        elif a.codes:
             codes = [c.strip().upper() for c in a.codes.split(',') if c.strip()]
         elif a.dept:
             codes = sorted(i['code'] for i in items if i['code'].startswith(a.dept.upper() + '-'))
@@ -213,7 +234,15 @@ def main():
     org = D['settings'].get('org', '')
     by_code = {i['code']: i for i in D['items']}; locs = {l['code']: l for l in D.get('locations', [])}
     layout = a.layout or ('big' if all(c.startswith('LOC-') for c in codes) else 'std')
-    label = 'demo' if a.demo else (a.dept or ('today' if a.today else 'places' if a.locations else 'selected')).lower()
+    # Never print a partial sheet (Jay, 2026-11-22): fill the empty spaces with the next blank
+    # stickers of the same department, reserved so the numbers are never reused.
+    per = LAYOUTS[layout]['cols'] * LAYOUTS[layout]['rows']; spare = (-len(codes)) % per
+    last_dept = depts.get(codes[-1].split('-')[0])
+    if spare and not a.demo and not a.no_fill and last_dept:
+        extra = reserve(D['_cookie'], last_dept['name'], spare)
+        codes = codes + extra
+        print('Filled %d empty space(s) with blank stickers %s to %s' % (spare, extra[0], extra[-1]))
+    label = 'demo' if a.demo else ((a.blank and a.blank.upper() + '-blank') or a.dept or ('today' if a.today else 'places' if a.locations else 'selected')).lower()
     # The external SSD changes drive letter (E:, D:, F: …); use whichever one holds the Foundry folder.
     root = next((d + r':\_PERSONAL\Foundry' for d in 'EDFGH' if os.path.isdir(d + r':\_PERSONAL\Foundry')), r'C:\_PERSONAL\Foundry')
     out = a.out or os.path.join(root, '26_Rialto_Inventory', 'Stickers', datetime.date.today().isoformat() + '_' + label)

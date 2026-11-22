@@ -169,6 +169,8 @@
     if (p === '/labels') return labels();
     if (p === '/settings') return settings();
     if (p === '/recent') return recent();
+    if (p === '/characters') return characters();
+    if (p === '/set') return setPage(new URLSearchParams(location.search).get('show') || '', new URLSearchParams(location.search).get('character') || '');
     if ((m = p.match(/^\/i\/(.+)$/i))) return itemPage(normCode(decodeURIComponent(m[1])) || decodeURIComponent(m[1]).toUpperCase());
     if ((m = p.match(/^\/l\/(.+)$/i))) return locPage(normCode(decodeURIComponent(m[1])) || decodeURIComponent(m[1]).toUpperCase());
     if ((m = p.match(/^\/audit\/(.+)$/i))) return audit(normCode(decodeURIComponent(m[1])) || decodeURIComponent(m[1]).toUpperCase());
@@ -192,6 +194,7 @@
       '<a class="tile" href="/browse" data-nav><span class="ic">☰</span><div><b>All items</b><br><span>' + its.length + ' total</span></div></a>' +
       '<a class="tile" href="/locations" data-nav><span class="ic">▦</span><div><b>Places</b><br><span>Racks, shelves, bins · audit</span></div></a>' +
       '<a class="tile" href="/labels" data-nav><span class="ic">▤</span><div><b>Print stickers</b><br><span>Blank or for items</span></div></a>' +
+      '<a class="tile" href="/characters" data-nav><span class="ic">☺</span><div><b>Characters</b><br><span>Everything for one role</span></div></a>' +
       '</div>' +
       '<div class="card"><div class="stats"><div><b>' + its.length + '</b><span>Items</span></div><div><b>' + out + '</b><span>Out now</span></div><div><b>' + miss + '</b><span>Missing</span></div></div>' +
       '<div class="row" style="margin-top:10px"><a class="btn alt sm" data-nav href="/browse?status=Checked out">Who has what</a><a class="btn alt sm" data-nav href="/browse?photo=none">' + nophoto + ' need photos</a></div></div>' +
@@ -243,7 +246,8 @@
         if (st.photo === 'none' && i.photos.length) return false;
         if (st.photo === 'has' && !i.photos.length) return false;
         if (!words.length) return true;
-        const hay = [i.code, i.name, i.category, i.color, i.size, i.period, i.tags, i.description, i.notes, i.holder, i.show, locName(i.location), i.sublocation, i.condition].join(' ').toLowerCase();
+        const hay = [i.code, i.name, i.category, i.color, i.size, i.period, i.tags, i.description, i.notes, i.holder, i.show, locName(i.location), i.sublocation, i.condition,
+          (i.roles || []).map((r) => r.show + ' ' + r.character).join(' ')].join(' ').toLowerCase();
         return words.every((w) => hay.includes(w));
       });
       const by = { name: (a, b) => a.name.localeCompare(b.name), new: (a, b) => (b.created_at || '').localeCompare(a.created_at || ''),
@@ -260,7 +264,7 @@
   }
 
   // Fields that carry over when one item is copied to the next sticker (never photos, status or holder).
-  const COPY_FIELDS = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value'];
+  const COPY_FIELDS = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
   function copyOf() { const c = new URLSearchParams(location.search).get('copy'); return c ? item(c.toUpperCase()) : null; }
 
   // ── Item page ──────────────────────────────────────────────────────────────
@@ -300,6 +304,7 @@
       (it.value ? '<dt>Value</dt><dd>$' + Number(it.value).toFixed(2) + '</dd>' : '') +
       (it.description ? '<dt>Description</dt><dd>' + esc(it.description) + '</dd>' : '') +
       (it.notes ? '<dt>Notes</dt><dd>' + esc(it.notes) + '</dd>' : '') +
+      ((it.roles || []).length ? '<dt>Characters</dt><dd>' + it.roles.map((r) => '<a href="' + setHref(r) + '" data-nav>' + esc(r.character) + (r.show ? ' <span class="muted">· ' + esc(r.show) + '</span>' : '') + '</a>').join('<br>') + '</dd>' : '') +
       '<dt>Last seen</dt><dd>' + esc(when(it.last_seen) || '—') + '</dd>' +
       '</dl><div class="row" style="margin-top:14px"><button class="btn alt" id="ed">Edit details</button>' +
       (it.status !== 'Missing' ? '<button class="btn alt" id="ms">Can\'t find it</button>' : '') + '</div></div>' +
@@ -409,7 +414,7 @@
   // ── Add / edit ─────────────────────────────────────────────────────────────
   function fieldsHtml(v) {
     const sticky = LS.get('sticky', {});
-    v = Object.assign({ category: sticky.category || '', location: sticky.location || '', qty: 1, condition: '' }, v || {});
+    v = Object.assign({ category: sticky.category || '', location: sticky.location || '', roles: sticky.roles || [], qty: 1, condition: '' }, v || {});
     if (v.code && deptOf(v.code)) v.fixedDept = deptOf(v.code);
     return '<label>What is it? *<input id="f_name" required maxlength="120" placeholder="e.g. Red velvet Victorian gown" value="' + esc(v.name || '') + '"></label>' +
       (v.fixedDept ? '<label>Department<input value="' + esc(v.fixedDept.p + ' · ' + v.fixedDept.name) + '" disabled></label><input type="hidden" id="f_category" value="' + esc(v.fixedDept.name) + '">'
@@ -418,6 +423,7 @@
       '<label>How many<input id="f_qty" type="number" inputmode="numeric" min="0" value="' + esc(v.qty) + '"></label>' +
       '<label>Size<input id="f_size" placeholder="38S, M, 9½…" value="' + esc(v.size || '') + '"></label></div>' +
       '<label>Place<select id="f_location">' + locOpts(v.location) + '</select></label>' +
+      rolesHtml(v.roles) +
       '<details' + (v.color || v.size || v.period || v.notes || v.description || v.tags || v.value || v.condition || v.sublocation ? ' open' : '') + '><summary style="font-weight:700;margin:4px 0 12px;cursor:pointer">More details (optional)</summary>' +
       '<label>Spot within the place<input id="f_sublocation" placeholder="top shelf, left end…" value="' + esc(v.sublocation || '') + '"></label>' +
       '<label>Color<input id="f_color" value="' + esc(v.color || '') + '"></label>' +
@@ -430,8 +436,36 @@
       (v.code ? '<label>Status<select id="f_status">' + opts(D.statuses, v.status) + '</select></label>' : '') +
       '</details>';
   }
+  // ── Characters (show + character) ─────────────────────────────────────────
+  const setHref = (r) => '/set?show=' + encodeURIComponent(r.show || '') + '&character=' + encodeURIComponent(r.character);
+  function allRoles() {
+    const m = new Map();
+    D.items.forEach((i) => (i.roles || []).forEach((r) => { const k = (r.show + '|' + r.character).toLowerCase(); if (!m.has(k)) m.set(k, { show: r.show, character: r.character, n: 0 }); m.get(k).n++; }));
+    return [...m.values()];
+  }
+  function roleRow(r) {
+    return '<div class="row role" style="gap:6px;margin-bottom:6px;flex-wrap:nowrap"><input class="r_show" list="dl_shows" placeholder="Show (e.g. A Few Good Men)" value="' + esc((r && r.show) || LS.get('lastShowRole', '')) + '" style="margin:0;flex:1.3;min-width:0">' +
+      '<input class="r_char" list="dl_chars" placeholder="Character (e.g. Galloway)" value="' + esc((r && r.character) || '') + '" style="margin:0;flex:1;min-width:0">' +
+      '<button type="button" class="btn alt sm" data-delrole title="Remove" style="flex:none">✕</button></div>';
+  }
+  function rolesHtml(roles) {
+    const rs = allRoles();
+    return '<div style="margin:0 0 12px"><div style="font-weight:650;font-size:.92rem;margin-bottom:5px">Characters it is for <span class="muted small">(show · character)</span></div>' +
+      '<div id="roles">' + (roles || []).map(roleRow).join('') + '</div>' +
+      '<button type="button" class="btn alt sm" data-addrole>+ Add a character</button>' +
+      '<datalist id="dl_shows">' + [...new Set(rs.map((r) => r.show).filter(Boolean))].map((s) => '<option value="' + esc(s) + '">').join('') + '</datalist>' +
+      '<datalist id="dl_chars">' + [...new Set(rs.map((r) => r.character))].map((s) => '<option value="' + esc(s) + '">').join('') + '</datalist></div>';
+  }
+  document.addEventListener('click', (e) => {
+    const add = e.target.closest('[data-addrole]'); if (add) { e.preventDefault(); $('#roles').insertAdjacentHTML('beforeend', roleRow(null)); const r = $$('#roles .r_char'); r[r.length - 1].focus(); return; }
+    const del = e.target.closest('[data-delrole]'); if (del) { e.preventDefault(); del.closest('.role').remove(); }
+  });
+  function readRoles(root) {
+    return $$('#roles .role', root).map((r) => ({ show: $('.r_show', r).value.trim(), character: $('.r_char', r).value.trim() })).filter((r) => r.character);
+  }
   function readFields(root) {
     const o = {};
+    if ($('#roles', root)) { o.roles = readRoles(root); const s = o.roles.find((r) => r.show); if (s) LS.set('lastShowRole', s.show); }
     ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'status'].forEach((k) => {
       const el = $('#f_' + k, root); if (el) o[k] = el.value;
     });
@@ -447,7 +481,7 @@
       '<input type="file" id="aph" accept="image/*" capture="environment" hidden>' +
       '<div id="aprev" class="nophoto" style="cursor:pointer">📷 Tap to take a photo (recommended)</div>' +
       fieldsHtml(pre) +
-      '<label class="check"><input type="checkbox" id="keep"' + (LS.get('keepOn', true) ? ' checked' : '') + '> Keep department &amp; place for the next item</label>' +
+      '<label class="check"><input type="checkbox" id="keep"' + (LS.get('keepOn', true) ? ' checked' : '') + '> Keep department, place &amp; characters for the next item</label>' +
       '<button class="btn big" id="sv">Save item</button></form>';
     if (append) view.insertAdjacentHTML('beforeend', html); else view.innerHTML = html;
     let photo = null;
@@ -461,7 +495,7 @@
       e.preventDefault(); const b = readFields(view); if (code) b.code = code;
       if (!code && !deptByName(b.category)) { toast('Pick a department.', 'bad'); return; }
       const keep = $('#keep').checked; LS.set('keepOn', keep);
-      LS.set('sticky', keep ? { category: b.category, location: b.location } : {});
+      LS.set('sticky', keep ? { category: b.category, location: b.location, roles: b.roles || [] } : {});
       $('#sv').disabled = true; $('#sv').textContent = 'Saving…';
       try {
         const r = await api('POST', '/api/items', b); upsert(r.item);
@@ -533,13 +567,45 @@
     $('#ef').onsubmit = async (e) => {
       e.preventDefault(); const b = readFields(view); const ch = {};
       delete b.category; // the sticker sets the department; use "Wrong department?" to change it
-      Object.keys(b).forEach((k) => { if (String(b[k] ?? '') !== String(it[k] ?? '')) ch[k] = b[k]; });
+      Object.keys(b).forEach((k) => { const same = k === 'roles' ? JSON.stringify(b.roles) === JSON.stringify(it.roles || []) : String(b[k] ?? '') === String(it[k] ?? ''); if (!same) ch[k] = b[k]; });
       try { if (Object.keys(ch).length) { const r = await api('PATCH', '/api/items/' + it.code, ch); upsert(r.item); } editing = false; toast('Saved', 'good'); render(); }
       catch (er) { toast(er.message, 'bad'); }
     };
   }
 
   // ── Locations ──────────────────────────────────────────────────────────────
+  function characters() {
+    const rs = allRoles().sort((a, b) => (a.show || '').localeCompare(b.show || '') || a.character.localeCompare(b.character));
+    let last = null;
+    view.innerHTML = '<h1>Characters</h1><p class="muted">Every costume piece, accessory and prop tagged for a character — the complete set in one place. Tag items on their edit form under <b>Characters it is for</b>.</p>' +
+      '<div class="search"><input id="cq" type="search" placeholder="Find a character or show…"></div><div class="list" id="cl">' +
+      rs.map((r) => {
+        const head = (r.show || 'No show named') !== last ? '<h3 style="margin:12px 2px 2px" data-show="' + esc((r.show || '').toLowerCase()) + '">' + esc(last = (r.show || 'No show named')) + '</h3>' : '';
+        return head + '<a class="it" href="' + setHref(r) + '" data-nav data-key="' + esc((r.show + ' ' + r.character).toLowerCase()) + '"><div class="th">☺</div><div class="bd"><div class="nm">' + esc(r.character) + '</div><div class="mt">' + r.n + ' item' + (r.n === 1 ? '' : 's') + '</div></div></a>';
+      }).join('') + '</div>' + (rs.length ? '' : '<div class="card empty">No characters yet. Open an item, tap <b>Edit details</b>, and add a character.</div>');
+    $('#cq').addEventListener('input', (e) => { const q = e.target.value.toLowerCase(); $$('#cl a').forEach((a) => { a.style.display = a.dataset.key.includes(q) ? '' : 'none'; }); });
+  }
+  function setPage(show, character) {
+    const match = (r) => r.character.toLowerCase() === character.toLowerCase() && (r.show || '').toLowerCase() === show.toLowerCase();
+    const its = D.items.filter((i) => (i.roles || []).some(match));
+    const byDept = {}; its.forEach((i) => { const d = (deptOf(i.code) || { name: i.category }).name; (byDept[d] = byDept[d] || []).push(i); });
+    const out = its.filter((i) => i.status === 'Checked out' || i.status === 'In a show').length;
+    view.innerHTML = '<span class="muted small">' + esc(show || 'No show named') + '</span><h1>' + esc(character) + '</h1>' +
+      '<div class="card"><div class="stats"><div><b>' + its.length + '</b><span>Pieces</span></div><div><b>' + out + '</b><span>Out now</span></div><div><b>' + its.filter((i) => i.status === 'Missing').length + '</b><span>Missing</span></div></div>' +
+      '<div class="row" style="margin-top:10px"><button class="btn" id="coAll"' + (its.length ? '' : ' disabled') + '>Check out whole set</button><button class="btn ok" id="ciAll"' + (out ? '' : ' disabled') + '>Return whole set</button></div>' +
+      '<div class="row" style="margin-top:8px"><button class="btn alt sm" id="prSet"' + (its.length ? '' : ' disabled') + '>Print stickers for this set</button><button class="btn alt sm" onclick="window.print()">Print this list</button></div></div>' +
+      Object.keys(byDept).sort().map((d) => '<div class="sect"><h2>' + esc(d) + '</h2></div><div class="list">' + byDept[d].sort((a, b) => a.name.localeCompare(b.name)).map((i) => rowHtml(i, '<div class="mt">' + esc(locName(i.location) || 'No place set') + (i.sublocation ? ' · ' + esc(i.sublocation) : '') + '</div>')).join('') + '</div>').join('') +
+      (its.length ? '' : '<div class="card empty">Nothing tagged for this character yet.</div>');
+    if ($('#prSet')) $('#prSet').onclick = () => printCodes(its.map((i) => i.code));
+    $('#coAll').onclick = () => modal('<h2>Check out ' + esc(character) + '\'s set</h2><form id="sf"><label>Who is taking it? (actor or dresser)<input id="h" required></label>' +
+      '<label class="check"><input type="checkbox" id="ins" checked> Staying in the building for the show</label><button class="btn big">Check out ' + its.length + ' pieces</button><button type="button" class="btn alt big" data-close style="margin-top:8px">Cancel</button></form>',
+      (m, close) => { $('#sf', m).onsubmit = async (e) => { e.preventDefault(); const h = $('#h', m).value.trim(); close(); let n = 0;
+        for (const i of its) { if (i.status === 'Checked out' || i.status === 'In a show') continue; try { const r = await api('POST', '/api/items/' + i.code + '/action', { action: 'checkout', holder: h, show: show, in_show: $('#ins', m).checked }); upsert(r.item); n++; } catch (er) { toast(er.message, 'bad'); } }
+        toast(n + ' pieces checked out to ' + h, 'good'); render(true); }; });
+    $('#ciAll').onclick = async () => { if (!confirm('Mark all ' + out + ' pieces as returned?')) return; let n = 0;
+      for (const i of its) { if (i.status !== 'Checked out' && i.status !== 'In a show') continue; try { const r = await api('POST', '/api/items/' + i.code + '/action', { action: 'checkin' }); upsert(r.item); n++; } catch (er) { toast(er.message, 'bad'); } }
+      toast(n + ' pieces returned', 'good'); render(true); };
+  }
   function locations() {
     const ls = D.locations.slice().sort((a, b) => (a.area || '').localeCompare(b.area || '') || a.name.localeCompare(b.name));
     const count = (c) => D.items.filter((i) => i.location === c).length;
@@ -725,8 +791,22 @@
     big:   { name: 'Large 3.33 × 1.87 in — 3 per sheet (racks, shelves, bins)', w: 1000, h: 560, cols: 1, rows: 3 },
   };
   function printer() { return LS.get('printer', 'pixcut'); }
-  function printCodes(codes, kind) {
-    if (printer() === 'pixcut') return pixcut(codes, kind === 'locations' || codes.every(isLocCode) ? 'big' : LS.get('pixLayout', 'std'));
+  const perSheet = (layout) => { const L = PIX_LAYOUTS[layout] || PIX_LAYOUTS.std; return L.cols * L.rows; };
+  async function printCodes(codes, kind) {
+    if (printer() === 'pixcut') {
+      const layout = kind === 'locations' || codes.every(isLocCode) ? 'big' : LS.get('pixLayout', 'std');
+      const spare = (perSheet(layout) - codes.length % perSheet(layout)) % perSheet(layout);
+      // Never print a partial sheet: fill the empty spaces with the next blank stickers of the same department.
+      const d = !codes.every(isLocCode) && deptOf(codes[codes.length - 1]);
+      if (spare && d) {
+        try {
+          const r = await api('POST', '/api/reserve', { count: spare, department: d.name });
+          codes = codes.concat(r.codes); D.settings.next = Object.assign({}, D.settings.next, { [d.p]: Number(r.codes[r.codes.length - 1].split('-')[1]) + 1 });
+          toast('Filled ' + spare + ' empty space' + (spare === 1 ? '' : 's') + ' with blank ' + d.p + ' stickers', 'good');
+        } catch (er) { toast(er.message, 'bad'); }
+      }
+      return pixcut(codes, layout);
+    }
     const size = LS.get('labelSize', '2x1');
     const f = document.createElement('form'); f.method = 'post'; f.action = '/print';
     [['size', size], ['kind', kind || 'items'], ['codes', codes.join(',')]].forEach(([n, v]) => {
@@ -853,8 +933,10 @@
     if ($('#lay')) $('#lay').onchange = (e) => LS.set('pixLayout', e.target.value);
     if ($('#sz')) $('#sz').onchange = (e) => LS.set('labelSize', e.target.value);
     $('#bk').onsubmit = async (e) => {
-      e.preventDefault(); const n = Number($('#bn').value) || 0; const dn = $('#bd').value; if (n < 1 || !dn) return toast('Pick a department and a number.', 'bad');
-      if (!confirm('Reserve and print ' + n + ' blank ' + deptByName(dn).p + ' stickers?')) return;
+      e.preventDefault(); let n = Number($('#bn').value) || 0; const dn = $('#bd').value; if (n < 1 || !dn) return toast('Pick a department and a number.', 'bad');
+      // Never print a partial sheet: round up to whole sheets (sticker paper costs money).
+      const per = printer() === 'pixcut' ? perSheet(LS.get('pixLayout', 'std')) : 1; const asked = n; n = Math.ceil(n / per) * per;
+      if (!confirm('Reserve and print ' + n + ' blank ' + deptByName(dn).p + ' stickers' + (n !== asked ? ' (rounded up from ' + asked + ' to fill ' + (n / per) + ' full sheet' + (n / per === 1 ? '' : 's') + ')' : '') + '?')) return;
       try { const r = await api('POST', '/api/reserve', { count: n, department: dn }); D.settings.next = Object.assign({}, D.settings.next, { [deptByName(dn).p]: Number(r.codes[r.codes.length - 1].split('-')[1]) + 1 }); printCodes(r.codes); }
       catch (er) { toast(er.message, 'bad'); }
     };

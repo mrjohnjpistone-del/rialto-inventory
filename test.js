@@ -149,6 +149,15 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     r = await call('POST', '/api/items/PROP-0010/action', { action: 'seen' }); ok(r.s === 200 && r.j.item.code === 'FURN-0003', 'old sticker still opens the item');
     r = await call('POST', '/api/items', { name: 'x', code: 'PROP-0010' }); ok(r.s === 409, 'old code is never reissued');
 
+    // ── Character sets ──
+    r = await call('PATCH', '/api/items/COST-0001', { roles: [{ show: 'A Few Good Men', character: 'Galloway' }, { show: 'a few good men', character: 'galloway' }, { show: 'X', character: '' }] });
+    ok(r.s === 200 && r.j.item.roles.length === 1 && r.j.item.roles[0].character === 'Galloway', 'character tag saved, duplicates and blanks dropped');
+    r = await call('POST', '/api/items', { name: 'Galloway ribbons', category: 'Accessories & jewelry', roles: [{ show: 'A Few Good Men', character: 'Galloway' }] });
+    ok(r.s === 200 && r.j.item.roles.length === 1, 'new item created with a character');
+    r = await call('GET', '/api/export.csv'); ok(r.t.includes('A Few Good Men: Galloway'), 'csv lists characters');
+    r = await fetch(INV + '/set?show=A%20Few%20Good%20Men&character=Galloway', { headers: { cookie } }); ok(r.status === 200, 'set page route serves the app');
+    await call('DELETE', '/api/items/' + (await call('GET', '/api/data')).j.items.find((i) => i.name === 'Galloway ribbons').code);
+
     // ── Department-head accounts ──
     const masterCookie = cookie;
     r = await call('POST', '/api/admins', { name: 'Costume Shop Head', user: 'Costumes' });
