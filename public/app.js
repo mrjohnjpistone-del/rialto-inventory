@@ -43,6 +43,13 @@
     return m ? m[1] + '-' + String(Number(m[2])).padStart(4, '0') : '';
   }
   const isLocCode = (c) => /^(LOC|L)-/.test(c);
+  // Typing a sticker code (cost1, COST-0001, loc3) in a search box + Enter opens that item/place,
+  // including a blank sticker's new-item form. Anything else stays a normal search.
+  function codeTarget(v) {
+    const c = normCode(v); if (!c) return '';
+    if (isLocCode(c)) return loc(c) ? '/l/' + c : '';
+    return (item(c) || deptOf(c)) ? '/i/' + c : '';
+  }
   // QR content: an all-capitals URL so the QR can use its compact alphanumeric mode.
   const qrUrl = (code) => (D.base + (isLocCode(code) ? '/L/' : '/I/') + code).toUpperCase();
   function ink(hex) { // readable text colour on a band of `hex`
@@ -192,7 +199,7 @@
       (recentList.length ? '<div class="list">' + recentList.map((i) => rowHtml(i, '<div class="mt">' + esc((i.history[0] || {}).action || '') + ' · ' + esc(i.updated_by || '') + ' · ' + esc(when(i.updated_at)) + '</div>')).join('') + '</div>'
         : '<div class="card empty">Nothing yet. Tap <b>Scan a sticker</b> on a blank label, or <b>Add item</b>, to start.</div>');
     $('#scanT').onclick = () => openScanner({ mode: 'go' });
-    $('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter') go('/browse?q=' + encodeURIComponent(e.target.value)); });
+    $('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { const c = codeTarget(e.target.value); go(c || '/browse?q=' + encodeURIComponent(e.target.value)); } });
   }
 
   function recent() {
@@ -224,6 +231,7 @@
       const u = new URLSearchParams(); Object.entries(st).forEach(([k, v]) => { if (v && k !== 'sort') u.set(k, v); });
       history.replaceState(null, '', '/browse' + (u.toString() ? '?' + u : '')); draw();
     };
+    $('#bq').addEventListener('keydown', (e) => { if (e.key === 'Enter') { const c = codeTarget(e.target.value); if (c) { e.preventDefault(); go(c); } } });
     $('#bq').addEventListener('input', sync); $$('.filters select').forEach((s) => s.addEventListener('change', sync));
     $('#printRes').onclick = () => { const c = filtered().map((i) => i.code); if (!c.length) return toast('No items to print.'); printCodes(c); };
     function filtered() {
