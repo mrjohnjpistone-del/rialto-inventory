@@ -23,11 +23,16 @@ import segno
 
 BASE = 'https://rialto-inventory.onrender.com'
 DPI = 300
-SHEET = (1170, 2010)  # 3.9 x 6.7 in printable area on Liene 4x7 sticker paper
+# Liene Photo only CUTS inside its dashed bleed line: 3.54 x 6.68 in on 4x7 sticker paper
+# (measured on the canvas rulers, 2026-11-22). The sheet is 3.5 x 6.6 in; place it in Liene at
+# W 3.5, H 6.6, X 0.02, Y 0.04 (inches, measured from the bleed line). Stickers are 0.2 in apart so
+# Liene's 1.5 mm cut border around each one never touches its neighbour.
+SHEET = (1050, 1980)
+GAP, MARGIN = 60, 24          # px at 300 dpi: 0.2 in between stickers, 0.08 in at the edges
 LAYOUTS = {
-    'std':   dict(w=540, h=285, cols=2, rows=6),    # 1.8 x 0.95 in, 12 per sheet
-    'small': dict(w=345, h=345, cols=3, rows=5),    # 1.15 in square, 15 per sheet
-    'big':   dict(w=1080, h=570, cols=1, rows=3),   # 3.6 x 1.9 in, places
+    'std':   dict(w=470, h=270, cols=2, rows=6),    # 1.57 x 0.9 in, 12 per sheet
+    'small': dict(w=294, h=294, cols=3, rows=5),    # 0.98 in square, 15 per sheet
+    'big':   dict(w=1000, h=560, cols=1, rows=3),   # 3.33 x 1.87 in, places
 }
 LOC_DEPT = {'p': 'LOC', 'name': 'Location', 'room': '', 'color': '#111111'}
 FONT = r'C:\Windows\Fonts\arialbd.ttf'
@@ -123,35 +128,37 @@ def sticker(code, dept, thing, layout, org=''):
     if dept['color'].lower() == '#ffffff':
         d.rectangle([bx, band - 4, w, band], fill=(17, 17, 17))
     bw = w - bx
-    # Band: department code on the left, organisation name (e.g. BOLD THEATRE) on the right.
-    f = fit(d, dept['p'], bw * 0.42, int(band * 0.72), black=True)
+    # Band: the department code, big. The organisation name gets its own line under the code.
+    f = fit(d, dept['p'], bw * 0.8, int(band * 0.72), black=True)
     d.text((bx + 12, band / 2 + 2), dept['p'], font=f, fill=ink(dept['color']), anchor='lm')
-    if org:
-        fo = fit(d, org.upper(), bw * 0.52, int(band * (0.40 if big else 0.36)), black=True)
-        d.text((w - pad - 4, band / 2 + 2), org.upper(), font=fo, fill=ink(dept['color']), anchor='rm')
     for r, row in enumerate(q.matrix_iter(scale=1, border=2)):
         for c, dark in enumerate(row):
             if dark:
                 d.rectangle([qx + c * cell, qy + r * cell, qx + (c + 1) * cell - 1, qy + (r + 1) * cell - 1], fill=(0, 0, 0))
+    ORG = org.upper()
     if small:
         fc = fit(d, code, w - 24, 46)
         d.text((w / 2, h - 18), code, font=fc, fill=(17, 17, 17), anchor='ms')
+        if ORG:
+            d.text((w / 2, band + 4), ORG, font=fit(d, ORG, w - 30, 22, black=True), fill=(17, 17, 17), anchor='mt')
     else:
         tx = qx + qs + 16; tw = w - pad - tx
         fc = fit(d, code, tw, 96 if big else 58)
         ty = band + (92 if big else 54)
         d.text((tx, ty), code, font=fc, fill=(17, 17, 17), anchor='ls')
+        if ORG:
+            ty += 40 if big else 30
+            d.text((tx, ty), ORG, font=fit(d, ORG, tw, 40 if big else 26, black=True), fill=(17, 17, 17), anchor='ls')
         if thing:
             fn = font(52 if big else 28)
-            for line in wrap(d, thing.get('name', ''), fn, tw, 4 if big else 3):
+            for line in wrap(d, thing.get('name', ''), fn, tw, 3 if big else 2):
                 ty += 62 if big else 33
                 d.text((tx, ty), line, font=fn, fill=(17, 17, 17), anchor='ls')
             if dept['p'] != 'LOC' and thing.get('size'):
                 ty += 44
                 d.text((tx, min(ty, h - 16)), 'Size ' + thing['size'], font=font(34, black=True), fill=(17, 17, 17), anchor='ls')
         elif dept['p'] != 'LOC':
-            f2 = font(24)
-            d.text((tx, ty + 36), dept['name'], font=f2, fill=(85, 85, 85), anchor='ls')
+            d.text((tx, ty + 34), dept['name'], font=fit(d, dept['name'], tw, 24), fill=(85, 85, 85), anchor='ls')
     img.paste(body, (0, 0), mask)
     ImageDraw.Draw(img).rounded_rectangle([1, 1, w - 2, h - 2], radius=26, outline=(0, 0, 0, 46), width=2)
     return img
@@ -159,13 +166,15 @@ def sticker(code, dept, thing, layout, org=''):
 
 def sheets(imgs, layout):
     L = LAYOUTS[layout]; per = L['cols'] * L['rows']
-    gx = (SHEET[0] - L['cols'] * L['w']) / (L['cols'] + 1); gy = (SHEET[1] - L['rows'] * L['h']) / (L['rows'] + 1)
+    bw = L['cols'] * L['w'] + (L['cols'] - 1) * GAP; bh = L['rows'] * L['h'] + (L['rows'] - 1) * GAP
+    x0 = (SHEET[0] - bw) // 2; y0 = (SHEET[1] - bh) // 2          # centred block, fixed 0.2 in gaps
+    assert x0 >= MARGIN and y0 >= MARGIN, 'layout does not fit inside the cut area'
     out = []
     for s in range(0, len(imgs), per):
         sh = Image.new('RGBA', SHEET, (0, 0, 0, 0))
         for i, im in enumerate(imgs[s:s + per]):
             c, r = i % L['cols'], i // L['cols']
-            sh.paste(im, (round(gx + c * (L['w'] + gx)), round(gy + r * (L['h'] + gy))), im)
+            sh.paste(im, (x0 + c * (L['w'] + GAP), y0 + r * (L['h'] + GAP)), im)
         out.append(sh)
     return out
 
@@ -214,9 +223,13 @@ def main():
         dept = LOC_DEPT if c.startswith('LOC-') else depts.get(c.split('-')[0], {'p': c.split('-')[0], 'name': '', 'room': '', 'color': '#616161'})
         im = sticker(c, dept, locs.get(c) if c.startswith('LOC-') else by_code.get(c), layout, org)
         im.save(os.path.join(out, 'singles', c + '.png'), dpi=(DPI, DPI)); imgs.append(im)
+    # Unique sheet names: Liene Photo reuses an earlier upload that has the same file name.
+    per = LAYOUTS[layout]['cols'] * LAYOUTS[layout]['rows']; stamp = datetime.datetime.now().strftime('%H%M%S')
     for i, sh in enumerate(sheets(imgs, layout), 1):
-        sh.save(os.path.join(out, 'sheet-%d.png' % i), dpi=(DPI, DPI))
+        part = codes[(i - 1) * per:i * per]
+        sh.save(os.path.join(out, 'sheet-%d_%s_to_%s_%s.png' % (i, part[0], part[-1], stamp)), dpi=(DPI, DPI))
     print('%d stickers (%s layout) -> %s' % (len(codes), layout, out))
+    print('In Liene Photo: Upload images -> pick sheet-N.png -> Use it -> set W 3.5, H 6.6, X 0.02, Y 0.04 -> Make-it')
 
 
 if __name__ == '__main__':

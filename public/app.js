@@ -716,11 +716,13 @@
   // sticker media with a 3.9×6.7" printable area at 300 dpi, so we hand it ready-made
   // sheet images: transparent background, each sticker a separate shape with a gap so
   // the cutter can cut round each one.
-  const PIX = { W: 1170, H: 2010, DPI: 300 };
+  // Liene only cuts inside its dashed bleed line (3.54 x 6.68 in). Sheet = 3.5 x 6.6 in, stickers 0.2 in apart.
+  // In Liene: set the image to W 3.5, H 6.6, X 0.02, Y 0.04 inches.
+  const PIX = { W: 1050, H: 1980, DPI: 300, GAP: 60 };
   const PIX_LAYOUTS = {
-    std:   { name: 'Standard 1.8 × 0.95 in — 12 per sheet', w: 540, h: 285, cols: 2, rows: 6 },
-    small: { name: 'Small square 1.15 in — 15 per sheet (props, jewelry)', w: 345, h: 345, cols: 3, rows: 5 },
-    big:   { name: 'Large 3.6 × 1.9 in — 3 per sheet (racks, shelves, bins)', w: 1080, h: 570, cols: 1, rows: 3 },
+    std:   { name: 'Standard 1.57 × 0.9 in — 12 per sheet', w: 470, h: 270, cols: 2, rows: 6 },
+    small: { name: 'Small square 0.98 in — 15 per sheet (props, jewelry)', w: 294, h: 294, cols: 3, rows: 5 },
+    big:   { name: 'Large 3.33 × 1.87 in — 3 per sheet (racks, shelves, bins)', w: 1000, h: 560, cols: 1, rows: 3 },
   };
   function printer() { return LS.get('printer', 'pixcut'); }
   function printCodes(codes, kind) {
@@ -761,20 +763,23 @@
     if (d.color.toLowerCase() === '#ffffff') { x.fillStyle = '#111'; x.fillRect(bx, Y + band - 4, X + w - bx, 4); }
     x.fillStyle = ink(d.color); x.textBaseline = 'middle';
     const bw = X + w - bx;
-    // Band: department code left, organisation name (BOLD THEATRE) right.
-    fitText(x, d.p, bw * 0.42, band * 0.7); x.textAlign = 'left'; x.fillText(d.p, bx + 12, Y + band / 2 + 2);
+    // Band: the department code, big. The organisation name (BOLD THEATRE) gets its own line under the code.
+    fitText(x, d.p, bw * 0.8, band * 0.7); x.textAlign = 'left'; x.fillText(d.p, bx + 12, Y + band / 2 + 2);
     const org = String(D.settings.org || '').toUpperCase();
-    if (org) { fitText(x, org, bw * 0.52, band * (L === PIX_LAYOUTS.big ? 0.4 : 0.36), '900'); x.textAlign = 'right'; x.fillText(org, X + w - pad - 4, Y + band / 2 + 2); }
     x.fillStyle = '#000';
     for (let rr = 0; rr < n - 4; rr++) for (let c = 0; c < n - 4; c++) if (q.isDark(rr, c)) x.fillRect(qx + (c + 2) * cell, qy + (rr + 2) * cell, cell, cell);
     x.fillStyle = '#111'; x.textBaseline = 'alphabetic';
-    if (small) { fitText(x, code, w - 24, 46); x.textAlign = 'center'; x.fillText(code, X + w / 2, Y + h - 18); }
+    if (small) {
+      fitText(x, code, w - 24, 46); x.textAlign = 'center'; x.fillText(code, X + w / 2, Y + h - 18);
+      if (org) { fitText(x, org, w - 30, 22, '900'); x.textBaseline = 'top'; x.fillText(org, X + w / 2, Y + band + 4); x.textBaseline = 'alphabetic'; }
+    }
     else {
       const tx = qx + qs + 16, tw = X + w - pad - tx; x.textAlign = 'left';
       fitText(x, code, tw, L === PIX_LAYOUTS.big ? 96 : 58); let ty = Y + band + (L === PIX_LAYOUTS.big ? 92 : 54); x.fillText(code, tx, ty);
+      if (org) { ty += L === PIX_LAYOUTS.big ? 40 : 30; fitText(x, org, tw, L === PIX_LAYOUTS.big ? 40 : 26, '900'); x.fillText(org, tx, ty); }
       if (thing) {
         const nm = thing.name || ''; x.font = 'bold ' + (L === PIX_LAYOUTS.big ? 52 : 28) + 'px Arial, Helvetica, sans-serif';
-        for (const line of wrap(x, nm, tw, L === PIX_LAYOUTS.big ? 4 : 3)) { ty += L === PIX_LAYOUTS.big ? 62 : 33; x.fillText(line, tx, ty); }
+        for (const line of wrap(x, nm, tw, L === PIX_LAYOUTS.big ? 3 : 2)) { ty += L === PIX_LAYOUTS.big ? 62 : 33; x.fillText(line, tx, ty); }
         if (!isL && thing.size) { x.font = '900 ' + 34 + 'px Arial, Helvetica, sans-serif'; ty += 44; x.fillText('Size ' + thing.size, tx, Math.min(ty, Y + h - 16)); }
       } else if (!isL) { x.font = 'bold 24px Arial, Helvetica, sans-serif'; x.fillStyle = '#555'; x.fillText(d.name, tx, ty + 36); x.fillText('Scan to add', tx, ty + 66); }
     }
@@ -783,12 +788,13 @@
   }
   function pixSheets(codes, layout) {
     const L = PIX_LAYOUTS[layout] || PIX_LAYOUTS.std, per = L.cols * L.rows, out = [];
-    const gx = (PIX.W - L.cols * L.w) / (L.cols + 1), gy = (PIX.H - L.rows * L.h) / (L.rows + 1);
+    const bw = L.cols * L.w + (L.cols - 1) * PIX.GAP, bh = L.rows * L.h + (L.rows - 1) * PIX.GAP;
+    const x0 = Math.floor((PIX.W - bw) / 2), y0 = Math.floor((PIX.H - bh) / 2);
     for (let s = 0; s < codes.length; s += per) {
       const c = document.createElement('canvas'); c.width = PIX.W; c.height = PIX.H; const x = c.getContext('2d');
       codes.slice(s, s + per).forEach((code, i) => {
         const col = i % L.cols, row = Math.floor(i / L.cols);
-        drawSticker(x, Math.round(gx + col * (L.w + gx)), Math.round(gy + row * (L.h + gy)), L, code);
+        drawSticker(x, x0 + col * (L.w + PIX.GAP), y0 + row * (L.h + PIX.GAP), L, code);
       });
       out.push(c);
     }
@@ -806,7 +812,7 @@
       '<div class="row"><button class="btn big" id="shareAll">Save / share to this phone</button></div>' +
       '<ol class="small" style="margin:12px 0 0;padding-left:22px"><li>Tap <b>Save / share</b> and choose <b>Save Image</b> (iPhone) or <b>Save to Photos / Gallery</b>.</li>' +
       '<li>Open the <b>Liene</b> app, start a sticker print and pick the sheet image from your photos.</li>' +
-      '<li>Choose the 4 × 7 sticker paper, keep it at full size (do not crop or scale), and let the app cut around each sticker.</li>' +
+      '<li>Choose the 4 × 7 sticker paper. Set the picture to <b>W 3.5, H 6.6, X 0.02, Y 0.04</b> inches so it sits inside the dashed cut line, then tap <b>Make-it</b>.</li>' +
       '<li>First time: print ONE sheet and scan a sticker with your camera before printing the rest.</li></ol></div>' +
       sheets.map((c, i) => '<div class="card"><p class="small muted">Sheet ' + (i + 1) + ' of ' + sheets.length + '</p><img src="' + c.toDataURL('image/png') + '" style="width:100%;max-width:360px;display:block;margin:auto;background:repeating-conic-gradient(#eee 0 25%,#fff 0 50%) 0 0/20px 20px;border-radius:8px">' +
         '<div class="row" style="margin-top:8px"><a class="btn alt sm" download="' + esc(name(i)) + '" href="' + c.toDataURL('image/png') + '">Download sheet ' + (i + 1) + '</a></div></div>').join('');
