@@ -205,7 +205,9 @@ def main():
     by_code = {i['code']: i for i in D['items']}; locs = {l['code']: l for l in D.get('locations', [])}
     layout = a.layout or ('big' if all(c.startswith('LOC-') for c in codes) else 'std')
     label = 'demo' if a.demo else (a.dept or ('today' if a.today else 'places' if a.locations else 'selected')).lower()
-    out = a.out or os.path.join(r'E:\_PERSONAL\Foundry\26_Rialto_Inventory\Stickers', datetime.date.today().isoformat() + '_' + label)
+    # The external SSD changes drive letter (E:, D:, F: …); use whichever one holds the Foundry folder.
+    root = next((d + r':\_PERSONAL\Foundry' for d in 'EDFGH' if os.path.isdir(d + r':\_PERSONAL\Foundry')), r'C:\_PERSONAL\Foundry')
+    out = a.out or os.path.join(root, '26_Rialto_Inventory', 'Stickers', datetime.date.today().isoformat() + '_' + label)
     os.makedirs(os.path.join(out, 'singles'), exist_ok=True)
     imgs = []
     for c in codes:
