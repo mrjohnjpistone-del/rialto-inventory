@@ -105,7 +105,7 @@ def qr_url(code):
     return (BASE + ('/L/' if code.startswith('LOC-') else '/I/') + code).upper()
 
 
-def sticker(code, dept, thing, layout):
+def sticker(code, dept, thing, layout, org=''):
     L = LAYOUTS[layout]; w, h = L['w'], L['h']; small = layout == 'small'; big = layout == 'big'
     img = Image.new('RGBA', (w, h), (0, 0, 0, 0))
     mask = Image.new('L', (w, h), 0); ImageDraw.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1], radius=26, fill=255)
@@ -123,15 +123,12 @@ def sticker(code, dept, thing, layout):
     if dept['color'].lower() == '#ffffff':
         d.rectangle([bx, band - 4, w, band], fill=(17, 17, 17))
     bw = w - bx
-    f = fit(d, dept['p'], bw * (0.6 if small else 0.45), int(band * 0.72), black=True)
-    if small:
-        d.text((w / 2, band / 2 + 2), dept['p'], font=f, fill=ink(dept['color']), anchor='mm')
-    else:
-        d.text((bx + 14, band / 2 + 2), dept['p'], font=f, fill=ink(dept['color']), anchor='lm')
-    if big:
-        sub = 'LOCATION' if dept['p'] == 'LOC' else (dept.get('room') or dept['name']).upper()
-        fs = fit(d, sub, bw * 0.5, int(band * 0.36))
-        d.text((w - pad - 6, band / 2 + 2), sub, font=fs, fill=ink(dept['color']), anchor='rm')
+    # Band: department code on the left, organisation name (e.g. BOLD THEATRE) on the right.
+    f = fit(d, dept['p'], bw * 0.42, int(band * 0.72), black=True)
+    d.text((bx + 12, band / 2 + 2), dept['p'], font=f, fill=ink(dept['color']), anchor='lm')
+    if org:
+        fo = fit(d, org.upper(), bw * 0.52, int(band * (0.40 if big else 0.36)), black=True)
+        d.text((w - pad - 4, band / 2 + 2), org.upper(), font=fo, fill=ink(dept['color']), anchor='rm')
     for r, row in enumerate(q.matrix_iter(scale=1, border=2)):
         for c, dark in enumerate(row):
             if dark:
@@ -183,7 +180,7 @@ def main():
     a = ap.parse_args()
 
     if a.demo:
-        D = {'settings': {'departments': [{'p': 'COST', 'name': 'Costumes', 'room': 'Costume shop', 'color': '#6b3fa0'},
+        D = {'settings': {'org': 'Bold Theatre', 'departments': [{'p': 'COST', 'name': 'Costumes', 'room': 'Costume shop', 'color': '#6b3fa0'},
                                           {'p': 'PROP', 'name': 'Props & set dressing', 'room': 'Prop room', 'color': '#f2c200'}]},
              'items': [{'code': 'COST-9001', 'name': 'DEMO USMC Alpha coat', 'size': '38S'},
                        {'code': 'COST-9002', 'name': 'DEMO USMC Alpha coat', 'size': '40R'},
@@ -204,6 +201,7 @@ def main():
     if not codes:
         sys.exit('Nothing to print for that choice.')
     depts = {d['p']: d for d in D['settings']['departments']}
+    org = D['settings'].get('org', '')
     by_code = {i['code']: i for i in D['items']}; locs = {l['code']: l for l in D.get('locations', [])}
     layout = a.layout or ('big' if all(c.startswith('LOC-') for c in codes) else 'std')
     label = 'demo' if a.demo else (a.dept or ('today' if a.today else 'places' if a.locations else 'selected')).lower()
@@ -212,7 +210,7 @@ def main():
     imgs = []
     for c in codes:
         dept = LOC_DEPT if c.startswith('LOC-') else depts.get(c.split('-')[0], {'p': c.split('-')[0], 'name': '', 'room': '', 'color': '#616161'})
-        im = sticker(c, dept, locs.get(c) if c.startswith('LOC-') else by_code.get(c), layout)
+        im = sticker(c, dept, locs.get(c) if c.startswith('LOC-') else by_code.get(c), layout, org)
         im.save(os.path.join(out, 'singles', c + '.png'), dpi=(DPI, DPI)); imgs.append(im)
     for i, sh in enumerate(sheets(imgs, layout), 1):
         sh.save(os.path.join(out, 'sheet-%d.png' % i), dpi=(DPI, DPI))

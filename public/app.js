@@ -761,9 +761,10 @@
     if (d.color.toLowerCase() === '#ffffff') { x.fillStyle = '#111'; x.fillRect(bx, Y + band - 4, X + w - bx, 4); }
     x.fillStyle = ink(d.color); x.textBaseline = 'middle';
     const bw = X + w - bx;
-    fitText(x, d.p, small ? bw * 0.6 : bw * 0.45, band * 0.7); x.textAlign = small ? 'center' : 'left';
-    x.fillText(d.p, small ? X + w / 2 : bx + 14, Y + band / 2 + 2);
-    if (L === PIX_LAYOUTS.big) { const sub = isL ? 'LOCATION' : (d.room || d.name).toUpperCase(); fitText(x, sub, bw * 0.5, band * 0.34); x.textAlign = 'right'; x.fillText(sub, X + w - pad - 6, Y + band / 2 + 2); }
+    // Band: department code left, organisation name (BOLD THEATRE) right.
+    fitText(x, d.p, bw * 0.42, band * 0.7); x.textAlign = 'left'; x.fillText(d.p, bx + 12, Y + band / 2 + 2);
+    const org = String(D.settings.org || '').toUpperCase();
+    if (org) { fitText(x, org, bw * 0.52, band * (L === PIX_LAYOUTS.big ? 0.4 : 0.36), '900'); x.textAlign = 'right'; x.fillText(org, X + w - pad - 4, Y + band / 2 + 2); }
     x.fillStyle = '#000';
     for (let rr = 0; rr < n - 4; rr++) for (let c = 0; c < n - 4; c++) if (q.isDark(rr, c)) x.fillRect(qx + (c + 2) * cell, qy + (rr + 2) * cell, cell, cell);
     x.fillStyle = '#111'; x.textBaseline = 'alphabetic';

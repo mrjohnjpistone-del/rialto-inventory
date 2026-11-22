@@ -55,7 +55,7 @@ const BACKUP_KEY       = process.env.BACKUP_KEY || '';
 // follows the storage ROOM (all costume-shop departments are purple). Consumables (paint,
 // tape, lamps, batteries, makeup, yardage) are not tagged; their shelf or bin is (LOC).
 const DEFAULT_DEPTS = [
-  { p: 'COST', name: 'Costumes',                      room: 'Costume shop',  color: '#6b3fa0' },
+  { p: 'COST', name: 'Costumes',                      room: 'Costume shop',  color: '#1d4ed8' },
   { p: 'WIG',  name: 'Wigs & hair',                   room: 'Costume shop',  color: '#6b3fa0' },
   { p: 'HAT',  name: 'Hats',                          room: 'Costume shop',  color: '#6b3fa0' },
   { p: 'SHOE', name: 'Shoes & boots',                 room: 'Costume shop',  color: '#6b3fa0' },
@@ -93,7 +93,7 @@ function freshStore() {
   return {
     settings: {
       title: 'Rialto Inventory',
-      org: 'Rialto Community Arts Center',
+      org: 'Bold Theatre',
       departments: DEFAULT_DEPTS.map((d) => Object.assign({}, d)),
       next: {},          // per-prefix next number, e.g. { COST: 142 }
       next_loc: 1,
