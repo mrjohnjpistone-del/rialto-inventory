@@ -149,6 +149,13 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     r = await call('POST', '/api/items/PROP-0010/action', { action: 'seen' }); ok(r.s === 200 && r.j.item.code === 'FURN-0003', 'old sticker still opens the item');
     r = await call('POST', '/api/items', { name: 'x', code: 'PROP-0010' }); ok(r.s === 409, 'old code is never reissued');
 
+    // ── Photo-only on the phone, details later on the computer ──
+    r = await call('POST', '/api/items', { code: 'COST-0040', needs_details: true });
+    ok(r.s === 200 && r.j.item.needs_details === true && r.j.item.name === 'Details needed' && r.j.item.category === 'Costumes', 'phone saves a blank sticker with no typing');
+    r = await call('PATCH', '/api/items/COST-0040', { name: 'Navy peacoat', size: '42L' });
+    ok(r.s === 200 && !r.j.item.needs_details && r.j.item.name === 'Navy peacoat', 'typing a real name on the computer clears "details needed"');
+    await call('DELETE', '/api/items/COST-0040');
+
     // ── Character sets ──
     r = await call('PATCH', '/api/items/COST-0001', { roles: [{ show: 'A Few Good Men', character: 'Galloway' }, { show: 'a few good men', character: 'galloway' }, { show: '', character: '' }] });
     ok(r.s === 200 && r.j.item.roles.length === 1 && r.j.item.roles[0].character === 'Galloway', 'character tag saved, duplicates and blanks dropped');

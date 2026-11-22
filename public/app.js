@@ -198,6 +198,7 @@
     const out = its.filter((i) => i.status === 'Checked out' || i.status === 'In a show').length;
     const miss = its.filter((i) => i.status === 'Missing').length;
     const nophoto = its.filter((i) => !i.photos.length).length;
+    const needDet = its.filter((i) => i.needs_details).length;
     const recentList = its.slice().sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')).slice(0, 6);
     const welcome = new URLSearchParams(location.search).get('welcome');
     view.innerHTML =
@@ -212,7 +213,8 @@
       '<a class="tile" href="/characters" data-nav><span class="ic">☺</span><div><b>Shows</b><br><span>Shows, characters &amp; their items</span></div></a>' +
       '</div>' +
       '<div class="card"><div class="stats"><div><b>' + its.length + '</b><span>Items</span></div><div><b>' + out + '</b><span>Out now</span></div><div><b>' + miss + '</b><span>Missing</span></div></div>' +
-      '<div class="row" style="margin-top:10px"><a class="btn alt sm" data-nav href="/browse?status=Checked out">Who has what</a><a class="btn alt sm" data-nav href="/browse?photo=none">' + nophoto + ' need photos</a></div></div>' +
+      '<div class="row" style="margin-top:10px"><a class="btn alt sm" data-nav href="/browse?status=Checked out">Who has what</a><a class="btn alt sm" data-nav href="/browse?photo=none">' + nophoto + ' need photos</a>' +
+      '<a class="btn ' + (needDet ? '' : 'alt ') + 'sm" data-nav href="/browse?details=need">' + needDet + ' need details</a></div></div>' +
       '<div class="sect"><h2>Latest changes</h2><a href="/recent" data-nav class="small">See all</a></div>' +
       (recentList.length ? '<div class="list">' + recentList.map((i) => rowHtml(i, '<div class="mt">' + esc((i.history[0] || {}).action || '') + ' · ' + esc(i.updated_by || '') + ' · ' + esc(when(i.updated_at)) + '</div>')).join('') + '</div>'
         : '<div class="card empty">Nothing yet. Tap <b>Scan a sticker</b> on a blank label, or <b>Add item</b>, to start.</div>');
@@ -234,7 +236,7 @@
   // ── Browse / search ────────────────────────────────────────────────────────
   function browse(soft) {
     const sp = new URLSearchParams(location.search);
-    const st = { q: sp.get('q') || '', cat: sp.get('cat') || '', status: sp.get('status') || '', loc: sp.get('loc') || '', photo: sp.get('photo') || '', sort: sp.get('sort') || LS.get('sort', 'name') };
+    const st = { q: sp.get('q') || '', cat: sp.get('cat') || '', status: sp.get('status') || '', loc: sp.get('loc') || '', photo: sp.get('photo') || '', details: sp.get('details') || '', sort: sp.get('sort') || LS.get('sort', 'name') };
     if (soft && $('#bq')) { draw(); return; }
     view.innerHTML = '<h1>Items</h1>' +
       '<div class="search"><input id="bq" type="search" placeholder="Search name, color, size, tag, code…" value="' + esc(st.q) + '"></div>' +
@@ -243,11 +245,12 @@
       '<select id="fs">' + opts(D.statuses, st.status, 'Any status') + '</select>' +
       '<select id="fl">' + locOpts(st.loc).replace('— No location yet —', 'Any place') + '<option value="none"' + (st.loc === 'none' ? ' selected' : '') + '>No place set</option></select>' +
       '<select id="fp">' + opts([['none', 'No photo'], ['has', 'Has photo']], st.photo, 'Photos: any') + '</select>' +
+      '<select id="fdt">' + opts([['need', 'Needs details']], st.details, 'Details: any') + '</select>' +
       '<select id="fo">' + opts([['name', 'A → Z'], ['new', 'Newest'], ['updated', 'Recently changed'], ['code', 'Sticker code']], st.sort) + '</select>' +
       '</div><div id="showHit"></div><p class="muted small" id="cnt"></p><div class="list" id="res"></div>' +
       '<div class="row" style="margin-top:14px"><button class="btn alt" id="printRes">Print stickers for these</button><a class="btn alt" href="/api/export.csv">Download spreadsheet</a></div>';
     const sync = () => {
-      st.q = $('#bq').value; st.cat = $('#fc').value; st.status = $('#fs').value; st.loc = $('#fl').value; st.photo = $('#fp').value; st.sort = $('#fo').value; LS.set('sort', st.sort);
+      st.q = $('#bq').value; st.cat = $('#fc').value; st.status = $('#fs').value; st.loc = $('#fl').value; st.photo = $('#fp').value; st.details = $('#fdt').value; st.sort = $('#fo').value; LS.set('sort', st.sort);
       const u = new URLSearchParams(); Object.entries(st).forEach(([k, v]) => { if (v && k !== 'sort') u.set(k, v); });
       history.replaceState(null, '', '/browse' + (u.toString() ? '?' + u : '')); draw();
     };
@@ -262,6 +265,7 @@
         if (st.loc === 'none' ? i.location : st.loc && i.location !== st.loc) return false;
         if (st.photo === 'none' && i.photos.length) return false;
         if (st.photo === 'has' && !i.photos.length) return false;
+        if (st.details === 'need' && !i.needs_details) return false;
         if (!words.length) return true;
         const hay = [i.code, i.name, i.category, i.color, i.size, i.period, i.tags, i.description, i.notes, i.holder, i.show, locName(i.location), i.sublocation, i.condition,
           (i.roles || []).map((r) => r.show + ' ' + r.character).join(' ')].join(' ').toLowerCase();
@@ -298,12 +302,34 @@
       const src = copyOf();
       view.innerHTML = '<div class="card"><h1>New sticker: <span class="code">' + esc(code) + '</span></h1><p>' +
         (src ? 'Copying from <b>' + esc(src.name) + '</b> (' + esc(src.code) + '). Check the details, take this one\'s photo, and save.' : 'This sticker is not on anything yet. Fill in the item it is stuck to.') + '</p></div>';
+      if (!src) {
+        view.insertAdjacentHTML('beforeend', '<div class="card" style="border:2px solid var(--red)"><h2 style="margin-bottom:6px">On the phone? Just take the photo</h2>' +
+          '<p class="muted small" style="margin-top:0">Saves this sticker with its photo. Type the details later on the computer (Home → <b>Need details</b>).</p>' +
+          '<input type="file" id="poph" accept="image/*" capture="environment" hidden><button class="btn big" id="pob">📷 Photo only — details later</button></div>' +
+          '<p class="muted small" style="text-align:center">— or fill everything in now —</p>');
+        $('#pob').onclick = () => $('#poph').click();
+        $('#poph').onchange = async (e) => {
+          const f = e.target.files[0]; if (!f) return;
+          $('#pob').disabled = true; $('#pob').textContent = 'Saving…';
+          try {
+            const photo = { full: await shrink(f, 1400, 0.74), thumb: await shrink(f, 360, 0.7) };
+            const r = await api('POST', '/api/items', { code, needs_details: true }); upsert(r.item);
+            const r2 = await api('POST', '/api/items/' + r.item.code + '/photos', photo); upsert(r2.item);
+            editing = false; history.replaceState(null, '', '/i/' + r.item.code); render();
+            modal('<h2>Saved ✓</h2><p><span class="code">' + esc(r.item.code) + '</span> has its photo. Add the details on the computer.</p>' +
+              '<button class="btn big" id="nx">⌗ Scan the next sticker</button><button class="btn alt big" data-close style="margin-top:8px">Done</button>',
+            (m, close) => { $('#nx', m).onclick = () => { close(); openScanner({ mode: 'go' }); }; });
+          } catch (er) { toast(er.message, 'bad'); $('#pob').disabled = false; $('#pob').textContent = '📷 Photo only — details later'; }
+        };
+      }
       return addForm(code, true, src);
     }
     const where = loc(it.location);
+    const needBanner = it.needs_details ? '<div class="banner" style="display:flex;gap:10px;align-items:center;justify-content:space-between"><span><b>Details needed</b> — photo is in; type the rest on the computer.</span><button class="btn sm" id="fillNow">Add details</button></div>' : '';
     view.innerHTML =
       '<div class="row" style="justify-content:space-between;margin-bottom:8px"><span>' + chip(it.code) + ' <span class="code">' + esc(it.code) + '</span></span>' + pill(it.status) + '</div>' +
       '<h1>' + esc(it.name) + (it.qty > 1 ? ' <span class="muted">×' + it.qty + '</span>' : '') + '</h1>' +
+      needBanner +
       (it.photos.length ? '<div class="photos">' + it.photos.map((p) => '<img src="/p/' + p + '.jpg" alt="" loading="lazy" data-pid="' + p + '">').join('') + '</div>'
         : '<label class="nophoto" for="ph">No photo yet — tap to take one</label>') +
       '<input type="file" id="ph" accept="image/*" capture="environment" hidden><input type="file" id="phg" accept="image/*" multiple hidden>' +
@@ -342,6 +368,7 @@
     if ($('#ci')) $('#ci').onclick = () => checkin(it);
     $('#mv').onclick = () => moveItem(it);
     $('#ed').onclick = () => editForm(it);
+    if ($('#fillNow')) $('#fillNow').onclick = () => editForm(it);
     $('#cpy').onclick = () => copyToSticker(it);
     $('#cpyN').onclick = () => makeCopies(it);
     if ($('#ms')) $('#ms').onclick = async () => { if (!confirm('Mark ' + it.name + ' as missing?')) return; await act(it.code, { action: 'missing' }, 'Marked missing'); };
@@ -611,7 +638,9 @@
   }
   function editForm(it) {
     editing = true;
-    view.innerHTML = '<form class="card" id="ef"><h1>Edit <span class="code">' + esc(it.code) + '</span></h1>' + fieldsHtml(it) +
+    view.innerHTML = '<form class="card" id="ef"><h1>' + (it.needs_details ? 'Add details: ' : 'Edit ') + '<span class="code">' + esc(it.code) + '</span></h1>' +
+      (it.photos[0] ? '<img src="/p/' + it.photos[0] + '_t.jpg" style="max-height:160px;border-radius:10px;display:block;margin-bottom:12px">' : '') +
+      fieldsHtml(it.needs_details ? Object.assign({}, it, { name: '' }) : it) +
       '<button class="btn big">Save changes</button><button type="button" class="btn alt big" id="cx" style="margin-top:8px">Cancel</button></form>';
     $('#cx').onclick = () => { editing = false; render(); };
     $('#ef').onsubmit = async (e) => {

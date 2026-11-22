@@ -700,6 +700,7 @@ const server = http.createServer(async (req, res) => {
     // Add an item
     if (method === 'POST' && p === '/api/items') {
       const b = await readBody(req);
+      if (b.needs_details && !s(b.name, 120)) b.name = 'Details needed';
       if (!s(b.name, 120)) return sendJson(res, 400, { error: 'Give the item a name.' });
       let code = b.code ? normCode(b.code) : '';
       let dept;
@@ -719,6 +720,7 @@ const server = http.createServer(async (req, res) => {
         color: '', size: '', period: '', tags: '', value: null, description: '', notes: '', holder: '', show: '', due: '',
         photos: [], history: [], aliases: [], created_at: now, created_by: by, updated_at: now, updated_by: by, last_seen: now };
       applyFields(item, b);
+      if (b.needs_details) item.needs_details = true;
       log(item, by, 'Added', item.location ? 'at ' + ((findLoc(item.location) || {}).name || item.location) : '');
       store.items.push(item); if (syncRoster(item.roles)) broadcast({ t: 'shows', shows: store.shows }); save();
       broadcast({ t: 'item', item: itemOut(item) });
@@ -735,6 +737,7 @@ const server = http.createServer(async (req, res) => {
         const b = await readBody(req);
         const prevLoc = item.location;
         const changed = applyFields(item, b);
+        if (item.needs_details && changed.includes('name') && item.name !== 'Details needed') { delete item.needs_details; changed.push('details added'); }
         if (changed.length) {
           item.updated_at = new Date().toISOString(); item.updated_by = by;
           const rest = changed.filter((c) => c !== 'location').join(', ');
