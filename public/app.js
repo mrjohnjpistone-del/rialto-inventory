@@ -918,8 +918,15 @@
     return accountsHtml() + '<div class="card"><h3>Invite the crew</h3><p>Print the poster and tape it up, or text people this link (it signs them in):</p>' +
       '<p><input readonly id="jl" value="' + esc(D.base + '/join?k=' + st.crew_key) + '"></p>' +
       '<div class="row"><button class="btn" id="cp">Copy link</button><a class="btn alt" href="/poster" target="_blank">Print crew poster</a></div></div>' +
-      (D.me && D.me.manager ? '<form class="card" id="kf"><h3>Codes</h3><label>Crew code (everyone)<input id="ck" value="' + esc(st.crew_key) + '"></label>' +
-      '<label>Master admin code (owner recovery)<input id="adk" value="' + esc(st.admin_key) + '"></label><p class="muted small">Changing the crew code signs everyone out until they use the new one.</p><button class="btn alt">Save codes</button></form>' : '') +
+      (D.me && D.me.manager ?
+        '<div class="card"><h3>Change the admin code</h3><p class="muted small">The master admin code gives full owner access from the crew-code box. Change it any time; the old one stops working at once.</p>' +
+        '<p>Current: <b class="code">' + esc(st.admin_key) + '</b></p>' +
+        '<label>New admin code (8 or more letters/numbers)<input id="adk" autocapitalize="characters" autocomplete="off" placeholder="type one, or tap Make one for me"></label>' +
+        '<div class="row"><button class="btn alt" type="button" data-gen="adk" data-pre="ADMIN-" data-len="8">Make one for me</button><button class="btn" type="button" id="saveAdk">Change admin code</button></div></div>' +
+        '<div class="card"><h3>Change the crew code</h3><p class="muted small">Volunteers use this. Changing it signs every volunteer out until they scan the new poster, so reprint the poster afterwards.</p>' +
+        '<p>Current: <b class="code">' + esc(st.crew_key) + '</b></p>' +
+        '<label>New crew code (6 or more letters/numbers)<input id="ck" autocapitalize="characters" autocomplete="off" placeholder="type one, or tap Make one for me"></label>' +
+        '<div class="row"><button class="btn alt" type="button" data-gen="ck" data-pre="RIALTO-" data-len="6">Make one for me</button><button class="btn" type="button" id="saveCk">Change crew code</button></div></div>' : '') +
       '<form class="card" id="sf2"><h3>Names</h3><label>App title<input id="tt" value="' + esc(st.title) + '"></label><label>Organization (printed on stickers)<input id="og" value="' + esc(st.org) + '"></label>' +
       '<label>Departments — one per line: CODE | Name | Room | #colour<textarea id="cats" rows="10" style="font-family:monospace;font-size:.85rem">' +
         esc(st.departments.map((d) => [d.p, d.name, d.room || '', d.color].join(' | ')).join('\n')) + '</textarea></label>' +
@@ -943,7 +950,21 @@
       catch (er) { toast(er.message, 'bad'); }
     };
     $('#cp').onclick = () => { const i = $('#jl'); i.select(); (navigator.clipboard ? navigator.clipboard.writeText(i.value) : Promise.reject()).then(() => toast('Copied', 'good'), () => document.execCommand('copy')); };
-    if ($('#kf')) $('#kf').onsubmit = async (e) => { e.preventDefault(); try { await api('POST', '/api/settings', { crew_key: $('#ck').value, admin_key: $('#adk').value }); await load(); render(); toast('Codes saved', 'good'); } catch (er) { toast(er.message, 'bad'); } };
+    $$('[data-gen]').forEach((b) => b.onclick = () => {
+      const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; const r = new Uint32Array(+b.dataset.len); crypto.getRandomValues(r);
+      $('#' + b.dataset.gen).value = b.dataset.pre + Array.from(r, (n) => A[n % A.length]).join('');
+    });
+    const saveCode = async (field, label, extra) => {
+      const v = $('#' + (field === 'admin_key' ? 'adk' : 'ck')).value.trim().toUpperCase();
+      if (!v) return toast('Type a new code or tap Make one for me.', 'bad');
+      if (!confirm('Change the ' + label + ' to ' + v + '?\nThe old one stops working right away.')) return;
+      try {
+        await api('POST', '/api/settings', { [field]: v }); await load(); render();
+        modal('<h2>' + label.charAt(0).toUpperCase() + label.slice(1) + ' changed ✓</h2><p>New code: <b class="code" style="font-size:1.4rem">' + esc(v) + '</b></p><p class="muted">Write it down now.' + (extra || '') + '</p><button class="btn big" data-close>Done</button>');
+      } catch (er) { toast(er.message, 'bad'); }
+    };
+    if ($('#saveAdk')) $('#saveAdk').onclick = () => saveCode('admin_key', 'admin code');
+    if ($('#saveCk')) $('#saveCk').onclick = () => saveCode('crew_key', 'crew code', ' Reprint the crew poster (button above) and take down the old one.');
     $('#sf2').onsubmit = async (e) => { e.preventDefault(); try { await api('POST', '/api/settings', { title: $('#tt').value, org: $('#og').value, departments: $('#cats').value.split('\n').map((l) => l.split('|').map((s) => s.trim())).filter((a) => a[0]).map(([p, name, room, color]) => ({ p, name, room, color })) }); await load(); render(); toast('Saved', 'good'); } catch (er) { toast(er.message, 'bad'); } };
     $$('[data-restore]').forEach((b) => b.onclick = async () => { try { await api('POST', '/api/restore', { code: b.dataset.restore }); await load(); render(); toast('Restored', 'good'); } catch (er) { toast(er.message, 'bad'); } });
     $('#imp').onchange = async (e) => {
