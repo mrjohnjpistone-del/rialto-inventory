@@ -387,6 +387,7 @@ function log(item, by, action, detail) {
   item.history.unshift({ at: new Date().toISOString(), by, action, detail: detail || '' });
   if (item.history.length > 60) item.history.length = 60;
 }
+const FITS = ["Men's", "Women's", "Children's"];
 const TEXT_FIELDS = { name: 120, category: 60, description: 1500, color: 60, size: 60, period: 80,
   tags: 200, notes: 1500, holder: 80, show: 120, due: 20, location: 12, sublocation: 80, condition: 30, status: 30 };
 function applyFields(item, b) {
@@ -403,6 +404,11 @@ function applyFields(item, b) {
   }
   if (Object.prototype.hasOwnProperty.call(b, 'qty')) {
     const q = num(b.qty, 0, 100000, 1); if (item.qty !== q) { item.qty = q; changed.push('qty'); }
+  }
+  // Who it fits: any of Men's / Women's / Children's (several allowed, e.g. a unisex coat).
+  if (Object.prototype.hasOwnProperty.call(b, 'fit')) {
+    const fit = FITS.filter((f) => (Array.isArray(b.fit) ? b.fit : String(b.fit || '').split(/[;,]/).map((x) => x.trim())).some((x) => String(x).toLowerCase().replace(/[^a-z]/g, '').startsWith(f.toLowerCase().replace(/[^a-z]/g, '').slice(0, 4))));
+    if (JSON.stringify(item.fit || []) !== JSON.stringify(fit)) { item.fit = fit; changed.push('fit'); }
   }
   // Characters: which show + character this item belongs to (an item can serve several).
   if (Object.prototype.hasOwnProperty.call(b, 'roles')) {
@@ -687,11 +693,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === 'GET' && p === '/api/export.csv') {
-      const cols = ['code', 'name', 'category', 'characters', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'period', 'tags', 'value', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
+      const cols = ['code', 'name', 'category', 'characters', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'fit', 'period', 'tags', 'value', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
       const q = (v) => { let t = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
       const base = baseUrl(req);
       const rows = store.items.map((i) => cols.map((c) => c === 'location_name' ? ((findLoc(i.location) || {}).name || '') :
         c === 'characters' ? (i.roles || []).map((r) => (r.show ? r.show + ': ' : '') + r.character).join('; ') :
+        c === 'fit' ? (i.fit || []).join('; ') :
         c === 'photos' ? i.photos.map((x) => base + '/p/' + x + '.jpg').join(' ') : i[c]).map(q).join(','));
       res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="rialto-inventory-' + new Date().toISOString().slice(0, 10) + '.csv"' });
       return res.end('﻿' + cols.join(',') + '\n' + rows.join('\n'));
@@ -816,7 +823,7 @@ const server = http.createServer(async (req, res) => {
         const b = await readBody(req); const n = num(b.count, 1, 100, 0);
         if (!n) return sendJson(res, 400, { error: 'How many copies?' });
         const now = new Date().toISOString(); const made = [];
-        const COPY = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value'];
+        const COPY = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'period', 'condition', 'tags', 'description', 'notes', 'value'];
         for (let k = 0; k < n; k++) {
           const c = { code: nextCode(prefixOf(item.code)), aliases: [], status: 'Available', holder: '', show: '', due: '', photos: b.photo ? item.photos.slice(0, 1) : [],
             history: [], created_at: now, created_by: by, updated_at: now, updated_by: by, last_seen: '' };

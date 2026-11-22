@@ -154,6 +154,10 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     ok(r.s === 200 && r.j.item.needs_details === true && r.j.item.name === 'Details needed' && r.j.item.category === 'Costumes', 'phone saves a blank sticker with no typing');
     r = await call('PATCH', '/api/items/COST-0040', { name: 'Navy peacoat', size: '42L' });
     ok(r.s === 200 && !r.j.item.needs_details && r.j.item.name === 'Navy peacoat', 'typing a real name on the computer clears "details needed"');
+    r = await call('PATCH', '/api/items/COST-0040', { fit: ["Women's", "Men's", 'bogus'] });
+    ok(r.s === 200 && JSON.stringify(r.j.item.fit) === JSON.stringify(["Men's", "Women's"]), "Men's/Women's/Children's ticks save, junk dropped: " + JSON.stringify(r.j.item.fit));
+    r = await call('PATCH', '/api/items/COST-0040', { fit: [] });
+    ok(r.s === 200 && r.j.item.fit.length === 0, 'unticking all clears who-it-fits');
     await call('DELETE', '/api/items/COST-0040');
 
     // ── Character sets ──

@@ -238,7 +238,7 @@
   // ── Browse / search ────────────────────────────────────────────────────────
   function browse(soft) {
     const sp = new URLSearchParams(location.search);
-    const st = { q: sp.get('q') || '', cat: sp.get('cat') || '', status: sp.get('status') || '', loc: sp.get('loc') || '', photo: sp.get('photo') || '', details: sp.get('details') || '', sort: sp.get('sort') || LS.get('sort', 'name') };
+    const st = { q: sp.get('q') || '', cat: sp.get('cat') || '', status: sp.get('status') || '', loc: sp.get('loc') || '', photo: sp.get('photo') || '', details: sp.get('details') || '', fit: sp.get('fit') || '', sort: sp.get('sort') || LS.get('sort', 'name') };
     if (soft && $('#bq')) { draw(); return; }
     view.innerHTML = '<h1>Items</h1>' +
       '<div class="search"><input id="bq" type="search" placeholder="Search name, color, size, tag, code…" value="' + esc(st.q) + '"></div>' +
@@ -247,12 +247,13 @@
       '<select id="fs">' + opts(D.statuses, st.status, 'Any status') + '</select>' +
       '<select id="fl">' + locOpts(st.loc).replace('— No location yet —', 'Any place') + '<option value="none"' + (st.loc === 'none' ? ' selected' : '') + '>No place set</option></select>' +
       '<select id="fp">' + opts([['none', 'No photo'], ['has', 'Has photo']], st.photo, 'Photos: any') + '</select>' +
+      '<select id="ffit">' + opts(FITS.map((f) => [f, f]), st.fit, "Men's / Women's / Children's") + '</select>' +
       '<select id="fdt">' + opts([['need', 'Needs details']], st.details, 'Details: any') + '</select>' +
       '<select id="fo">' + opts([['name', 'A → Z'], ['new', 'Newest'], ['updated', 'Recently changed'], ['code', 'Sticker code']], st.sort) + '</select>' +
       '</div><div id="showHit"></div><p class="muted small" id="cnt"></p><div class="list" id="res"></div>' +
       '<div class="row" style="margin-top:14px"><button class="btn alt" id="printRes">Print stickers for these</button><a class="btn alt" href="/api/export.csv">Download spreadsheet</a></div>';
     const sync = () => {
-      st.q = $('#bq').value; st.cat = $('#fc').value; st.status = $('#fs').value; st.loc = $('#fl').value; st.photo = $('#fp').value; st.details = $('#fdt').value; st.sort = $('#fo').value; LS.set('sort', st.sort);
+      st.q = $('#bq').value; st.cat = $('#fc').value; st.status = $('#fs').value; st.loc = $('#fl').value; st.photo = $('#fp').value; st.details = $('#fdt').value; st.fit = $('#ffit').value; st.sort = $('#fo').value; LS.set('sort', st.sort);
       const u = new URLSearchParams(); Object.entries(st).forEach(([k, v]) => { if (v && k !== 'sort') u.set(k, v); });
       history.replaceState(null, '', '/browse' + (u.toString() ? '?' + u : '')); draw();
     };
@@ -268,8 +269,9 @@
         if (st.photo === 'none' && i.photos.length) return false;
         if (st.photo === 'has' && !i.photos.length) return false;
         if (st.details === 'need' && !i.needs_details) return false;
+        if (st.fit && !(i.fit || []).includes(st.fit)) return false;
         if (!words.length) return true;
-        const hay = [i.code, i.name, i.category, i.color, i.size, i.period, i.tags, i.description, i.notes, i.holder, i.show, locName(i.location), i.sublocation, i.condition,
+        const hay = [i.code, i.name, i.category, i.color, i.size, (i.fit || []).join(' '), i.period, i.tags, i.description, i.notes, i.holder, i.show, locName(i.location), i.sublocation, i.condition,
           (i.roles || []).map((r) => r.show + ' ' + r.character).join(' ')].join(' ').toLowerCase();
         return words.every((w) => hay.includes(w));
       });
@@ -289,7 +291,7 @@
   }
 
   // Fields that carry over when one item is copied to the next sticker (never photos, status or holder).
-  const COPY_FIELDS = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
+  const COPY_FIELDS = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
   function copyOf() { const c = new URLSearchParams(location.search).get('copy'); return c ? item(c.toUpperCase()) : null; }
 
   // ── Item page ──────────────────────────────────────────────────────────────
@@ -346,6 +348,7 @@
       (it.condition ? '<dt>Condition</dt><dd>' + esc(it.condition) + '</dd>' : '') +
       (it.color ? '<dt>Color</dt><dd>' + esc(it.color) + '</dd>' : '') +
       (it.size ? '<dt>Size</dt><dd>' + esc(it.size) + '</dd>' : '') +
+      ((it.fit || []).length ? '<dt>Fits</dt><dd>' + esc(it.fit.join(', ')) + '</dd>' : '') +
       (it.period ? '<dt>Period / style</dt><dd>' + esc(it.period) + '</dd>' : '') +
       (it.tags ? '<dt>Tags</dt><dd>' + esc(it.tags) + '</dd>' : '') +
       (it.value ? '<dt>Value</dt><dd>$' + Number(it.value).toFixed(2) + '</dd>' : '') +
@@ -565,6 +568,7 @@
   }
 
   // ── Add / edit ─────────────────────────────────────────────────────────────
+  const FITS = ["Men's", "Women's", "Children's"];
   function fieldsHtml(v) {
     const sticky = LS.get('sticky', {});
     v = Object.assign({ category: sticky.category || '', location: sticky.location || '', roles: sticky.roles || [], qty: 1, condition: '' }, v || {});
@@ -575,6 +579,8 @@
       '<div class="grid2">' +
       '<label>How many<input id="f_qty" type="number" inputmode="numeric" min="0" value="' + esc(v.qty) + '"></label>' +
       '<label>Size<input id="f_size" placeholder="38S, M, 9½…" value="' + esc(v.size || '') + '"></label></div>' +
+      '<fieldset class="fits"><legend>Who it fits <span class="muted small">(tick all that apply)</span></legend>' +
+      FITS.map((f) => '<label class="check"><input type="checkbox" class="f_fit" value="' + esc(f) + '"' + ((v.fit || []).includes(f) ? ' checked' : '') + '> ' + esc(f) + '</label>').join('') + '</fieldset>' +
       '<label>Place<select id="f_location">' + locOpts(v.location) + '</select></label>' +
       rolesHtml(v.roles) +
       '<details' + (v.color || v.size || v.period || v.notes || v.description || v.tags || v.value || v.condition || v.sublocation ? ' open' : '') + '><summary style="font-weight:700;margin:4px 0 12px;cursor:pointer">More details (optional)</summary>' +
@@ -649,6 +655,7 @@
   }
   function readFields(root) {
     const o = {};
+    if ($('.fits', root)) o.fit = $$('.f_fit', root).filter((c) => c.checked).map((c) => c.value);
     if ($('#roles', root)) { o.roles = readRoles(root); const s = o.roles.find((r) => r.show); if (s) LS.set('lastShowRole', s.show); }
     ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'status'].forEach((k) => {
       const el = $('#f_' + k, root); if (el) o[k] = el.value;

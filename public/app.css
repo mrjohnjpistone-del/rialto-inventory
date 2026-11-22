@@ -107,3 +107,6 @@ dl.facts dt{color:var(--muted);font-size:.88rem}dl.facts dd{margin:0;font-weight
 @media(max-width:380px){.grid2{grid-template-columns:1fr}}
 [hidden]{display:none!important}
 .chip{display:inline-block;font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:900;font-size:.72rem;letter-spacing:.04em;padding:2px 7px;border-radius:6px;vertical-align:middle}
+.fits{border:1px solid var(--line,#ddd);border-radius:12px;padding:8px 12px 10px;margin:0 0 14px;display:flex;flex-wrap:wrap;gap:6px 18px}
+.fits legend{font-weight:700;padding:0 4px}
+.fits .check{margin:4px 0}
