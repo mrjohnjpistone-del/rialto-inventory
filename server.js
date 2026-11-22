@@ -60,7 +60,7 @@ const DEFAULT_DEPTS = [
   { p: 'HAT',  name: 'Hats',                          room: 'Costume shop',  color: '#6b3fa0' },
   { p: 'SHOE', name: 'Shoes & boots',                 room: 'Costume shop',  color: '#ffd400' },
   { p: 'ACC',  name: 'Accessories & jewelry',         room: 'Costume shop',  color: '#d71920' },
-  { p: 'PROP', name: 'Props & set dressing',          room: 'Prop room',     color: '#f2c200' },
+  { p: 'PROP', name: 'Props & set dressing',          room: 'Prop room',     color: '#16a34a' },
   { p: 'FURN', name: 'Furniture',                     room: 'Scene storage', color: '#2e7d32' },
   { p: 'SET',  name: 'Set pieces, flats & platforms', room: 'Scene storage', color: '#2e7d32' },
   { p: 'DRAP', name: 'Drapes & soft goods',           room: 'Soft goods',    color: '#1a2a5e' },
