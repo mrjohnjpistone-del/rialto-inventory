@@ -868,7 +868,7 @@
       '<div class="card"><h3>Spreadsheet</h3><div class="row"><a class="btn alt" href="/api/export.csv">Download everything (CSV)</a></div></div>' +
       (admin ? adminHtml(st) : '<form class="card" id="al"><h3>Department head sign-in</h3>' +
         '<label>Username<input id="au" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>' +
-        '<label>Password<input id="ap" type="password" autocomplete="current-password" required></label><button class="btn alt big">Sign in as admin</button></form>');
+        '<label>Password<input id="ap" type="password" autocomplete="current-password" required></label>' + showPwBox() + '<button class="btn alt big">Sign in as admin</button></form>');
     if ($('#cn')) $('#cn').onclick = () => askName(true);
     if (D.me && !D.me.master) wirePwForm();
     if (!admin) $('#al').onsubmit = async (e) => {
@@ -878,11 +878,19 @@
     };
     else wireAdmin(st);
   }
+  // "Show password" tick box: reveals every password box in the same form while ticked.
+  function showPwBox() { return '<label class="check"><input type="checkbox" class="showpw"> Show password</label>'; }
+  document.addEventListener('change', (e) => {
+    if (!e.target.classList || !e.target.classList.contains('showpw')) return;
+    const f = e.target.closest('form'); if (!f) return;
+    f.querySelectorAll('input[data-pw], input[type=password]').forEach((i) => { i.dataset.pw = '1'; i.type = e.target.checked ? 'text' : 'password'; });
+  });
   function pwFormHtml() {
     return '<form class="card" id="pwf"><h3>Change my password</h3>' +
       '<label>Current password<input id="pw0" type="password" autocomplete="current-password" required></label>' +
       '<label>New password (8 or more characters)<input id="pw1" type="password" autocomplete="new-password" minlength="8" required></label>' +
       '<label>New password again<input id="pw2" type="password" autocomplete="new-password" minlength="8" required></label>' +
+      showPwBox() +
       '<button class="btn big">Change password</button></form>';
   }
   function wirePwForm(onDone) {

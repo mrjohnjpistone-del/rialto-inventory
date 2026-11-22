@@ -527,6 +527,7 @@ function loginPage(msg) {
     '<form method="post" action="/login"><input type="hidden" name="mode" value="admin">' +
     '<label>Username<input name="user" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>' +
     '<label>Password<input name="password" type="password" autocomplete="current-password" required></label>' +
+    '<label class="check"><input type="checkbox" onchange="this.form.password.type=this.checked?\'text\':\'password\'"> Show password</label>' +
     '<input type="hidden" name="next" value=""><button class="btn alt big">Sign in</button></form>' +
     '<script>document.querySelectorAll("[name=next]").forEach(function(e){e.value=location.pathname+location.search})</script></main></body></html>';
 }
