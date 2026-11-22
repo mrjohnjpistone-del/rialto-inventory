@@ -29,7 +29,20 @@
     if (!r.ok) { const er = new Error(j.error || 'Something went wrong.'); er.status = r.status; er.data = j; throw er; }
     return j;
   }
-  async function load() { D = await api('GET', '/api/data'); $('#title').textContent = D.settings.title; }
+  let BUILD0 = null; // version of the code this page loaded with
+  async function load() {
+    D = await api('GET', '/api/data'); $('#title').textContent = D.settings.title;
+    if (BUILD0 === null) BUILD0 = D.build;
+    else if (D.build && D.build !== BUILD0) newVersion();
+  }
+  // A new version went live: reload now unless someone is mid-typing; then offer a one-tap update instead.
+  function newVersion() {
+    if (!editing && !scanner && !typing()) { location.reload(); return; }
+    if ($('#updbar')) return;
+    const b = document.createElement('div'); b.id = 'updbar'; b.className = 'toast good'; b.style.opacity = 1; b.style.cursor = 'pointer';
+    b.textContent = 'New version ready — tap here to update (save first)'; b.onclick = () => location.reload();
+    document.body.appendChild(b);
+  }
   function upsert(item) { const i = D.items.findIndex((x) => x.code === item.code); if (i >= 0) D.items[i] = item; else D.items.push(item); }
   const item = (c) => D.items.find((x) => x.code === c) || D.items.find((x) => (x.aliases || []).includes(c));
   const depts = () => D.settings.departments;
@@ -80,6 +93,7 @@
         if (m.t === 'item') upsert(m.item);
         else if (m.t === 'del') D.items = D.items.filter((x) => x.code !== m.code);
         else if (m.t === 'loc') { const i = D.locations.findIndex((x) => x.code === m.loc.code); if (i >= 0) D.locations[i] = m.loc; else D.locations.push(m.loc); }
+        else if (m.t === 'shows') D.shows = m.shows;
         else if (m.t === 'reload' || m.t === 'settings') await load();
         if (!editing && !scanner && !typing()) render(true);
       };
@@ -159,7 +173,7 @@
     const p = location.pathname.replace(/\/+$/, '') || '/';
     route = p;
     const tab = p === '/' ? 'home' : p.split('/')[1].toLowerCase();
-    $$('#tabbar a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab || (tab === 'i' && a.dataset.tab === 'browse') || (tab === 'l' && a.dataset.tab === 'locations')));
+    $$('#tabbar a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab || (tab === 'i' && a.dataset.tab === 'browse') || (tab === 'l' && a.dataset.tab === 'locations') || ((tab === 'show' || tab === 'set') && a.dataset.tab === 'characters')));
     let m;
     if (p === '/') return home();
     if (p === '/browse') return browse(soft);
@@ -195,7 +209,7 @@
       '<a class="tile" href="/browse" data-nav><span class="ic">☰</span><div><b>All items</b><br><span>' + its.length + ' total</span></div></a>' +
       '<a class="tile" href="/locations" data-nav><span class="ic">▦</span><div><b>Places</b><br><span>Racks, shelves, bins · audit</span></div></a>' +
       '<a class="tile" href="/labels" data-nav><span class="ic">▤</span><div><b>Print stickers</b><br><span>Blank or for items</span></div></a>' +
-      '<a class="tile" href="/characters" data-nav><span class="ic">☺</span><div><b>Shows &amp; characters</b><br><span>Everything for a show or role</span></div></a>' +
+      '<a class="tile" href="/characters" data-nav><span class="ic">☺</span><div><b>Shows</b><br><span>Shows, characters &amp; their items</span></div></a>' +
       '</div>' +
       '<div class="card"><div class="stats"><div><b>' + its.length + '</b><span>Items</span></div><div><b>' + out + '</b><span>Out now</span></div><div><b>' + miss + '</b><span>Missing</span></div></div>' +
       '<div class="row" style="margin-top:10px"><a class="btn alt sm" data-nav href="/browse?status=Checked out">Who has what</a><a class="btn alt sm" data-nav href="/browse?photo=none">' + nophoto + ' need photos</a></div></div>' +
@@ -447,28 +461,57 @@
   const roleLabel = (r) => r.character || 'Whole show';
   function allRoles() {
     const m = new Map();
-    D.items.forEach((i) => (i.roles || []).forEach((r) => { const k = (r.show + '|' + r.character).toLowerCase(); if (!m.has(k)) m.set(k, { show: r.show, character: r.character, n: 0 }); m.get(k).n++; }));
+    const put = (show, character, add) => { const k = (show + '|' + character).toLowerCase(); if (!m.has(k)) m.set(k, { show, character, n: 0 }); m.get(k).n += add; };
+    (D.shows || []).forEach((s) => { put(s.name, '', 0); s.characters.forEach((c) => put(s.name, c, 0)); });
+    D.items.forEach((i) => (i.roles || []).forEach((r) => put(r.show, r.character, 1)));
     return [...m.values()];
   }
+  const rosterNames = () => [...new Set((D.shows || []).map((s) => s.name).concat(D.items.flatMap((i) => (i.roles || []).map((r) => r.show))).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const rosterChars = (show) => { const s = (D.shows || []).find((x) => x.name.toLowerCase() === String(show).toLowerCase());
+    return [...new Set((s ? s.characters : []).concat(D.items.flatMap((i) => (i.roles || []).filter((r) => r.show.toLowerCase() === String(show).toLowerCase()).map((r) => r.character))).filter(Boolean))].sort((a, b) => a.localeCompare(b)); };
+  // One row = a show drop-down + a character drop-down (with "+ New…" choices to add on the spot).
   function roleRow(r) {
-    return '<div class="row role" style="gap:6px;margin-bottom:6px;flex-wrap:nowrap"><input class="r_show" list="dl_shows" placeholder="Show (e.g. A Few Good Men)" value="' + esc((r && r.show) || LS.get('lastShowRole', '')) + '" style="margin:0;flex:1.3;min-width:0">' +
-      '<input class="r_char" list="dl_chars" placeholder="Character (blank = whole show)" value="' + esc((r && r.character) || '') + '" style="margin:0;flex:1;min-width:0">' +
+    const show = (r && r.show) || LS.get('lastShowRole', '');
+    return '<div class="row role" style="gap:6px;margin-bottom:6px;flex-wrap:nowrap">' +
+      '<select class="r_show" style="margin:0;flex:1.2;min-width:0">' + showOpts(show) + '</select>' +
+      '<select class="r_char" style="margin:0;flex:1;min-width:0">' + charOpts(show, (r && r.character) || '') + '</select>' +
       '<button type="button" class="btn alt sm" data-delrole title="Remove" style="flex:none">✕</button></div>';
   }
+  function showOpts(sel) {
+    const names = rosterNames(); if (sel && !names.some((n) => n.toLowerCase() === sel.toLowerCase())) names.push(sel);
+    return '<option value="">Pick a show…</option>' + names.map((n) => '<option' + (n.toLowerCase() === String(sel).toLowerCase() ? ' selected' : '') + '>' + esc(n) + '</option>').join('') + '<option value="__new">+ New show…</option>';
+  }
+  function charOpts(show, sel) {
+    const cs = show ? rosterChars(show) : []; if (sel && !cs.some((c) => c.toLowerCase() === sel.toLowerCase())) cs.push(sel);
+    return '<option value="">Whole show (no character)</option>' + cs.map((c) => '<option' + (c.toLowerCase() === String(sel).toLowerCase() ? ' selected' : '') + '>' + esc(c) + '</option>').join('') + (show ? '<option value="__new">+ New character…</option>' : '');
+  }
   function rolesHtml(roles) {
-    const rs = allRoles();
-    return '<div style="margin:0 0 12px"><div style="font-weight:650;font-size:.92rem;margin-bottom:5px">Shows &amp; characters it is for <span class="muted small">(leave character blank for the whole show)</span></div>' +
-      '<div id="roles">' + (roles || []).map(roleRow).join('') + '</div>' +
-      '<button type="button" class="btn alt sm" data-addrole>+ Add a character</button>' +
-      '<datalist id="dl_shows">' + [...new Set(rs.map((r) => r.show).filter(Boolean))].map((s) => '<option value="' + esc(s) + '">').join('') + '</datalist>' +
-      '<datalist id="dl_chars">' + [...new Set(rs.map((r) => r.character))].map((s) => '<option value="' + esc(s) + '">').join('') + '</datalist></div>';
+    return '<div style="margin:0 0 12px"><div style="font-weight:650;font-size:.92rem;margin-bottom:5px">Show &amp; character</div>' +
+      '<div id="roles">' + ((roles && roles.length) ? roles.map(roleRow).join('') : roleRow(null)) + '</div>' +
+      '<button type="button" class="btn alt sm" data-addrole>+ Add another show or character</button></div>';
   }
   document.addEventListener('click', (e) => {
-    const add = e.target.closest('[data-addrole]'); if (add) { e.preventDefault(); $('#roles').insertAdjacentHTML('beforeend', roleRow(null)); const r = $$('#roles .r_char'); r[r.length - 1].focus(); return; }
+    const add = e.target.closest('[data-addrole]'); if (add) { e.preventDefault(); $('#roles').insertAdjacentHTML('beforeend', roleRow(null)); return; }
     const del = e.target.closest('[data-delrole]'); if (del) { e.preventDefault(); del.closest('.role').remove(); }
   });
+  document.addEventListener('change', async (e) => {
+    const t = e.target; const row = t.closest && t.closest('.role'); if (!row) return;
+    if (t.classList.contains('r_show')) {
+      if (t.value === '__new') {
+        const n = (prompt('Name of the new show') || '').trim(); if (!n) { t.value = ''; return; }
+        try { const r = await api('POST', '/api/shows', { name: n }); D.shows = r.shows; } catch (er) { toast(er.message, 'bad'); }
+        t.innerHTML = showOpts(n);
+      }
+      if (t.value) LS.set('lastShowRole', t.value);
+      $('.r_char', row).innerHTML = charOpts(t.value, '');
+    } else if (t.classList.contains('r_char') && t.value === '__new') {
+      const show = $('.r_show', row).value; const n = (prompt('New character in ' + show) || '').trim(); if (!n) { t.value = ''; return; }
+      try { const r = await api('POST', '/api/shows', { name: show, character: n }); D.shows = r.shows; } catch (er) { toast(er.message, 'bad'); }
+      t.innerHTML = charOpts(show, n);
+    }
+  });
   function readRoles(root) {
-    return $$('#roles .role', root).map((r) => ({ show: $('.r_show', r).value.trim(), character: $('.r_char', r).value.trim() })).filter((r) => r.character || r.show);
+    return $$('#roles .role', root).map((r) => ({ show: $('.r_show', r).value.replace('__new', ''), character: $('.r_char', r).value.replace('__new', '') })).filter((r) => r.show || r.character);
   }
   function readFields(root) {
     const o = {};
@@ -584,18 +627,23 @@
   function characters() {
     const rs = allRoles().sort((a, b) => (a.show || '').localeCompare(b.show || '') || a.character.localeCompare(b.character));
     let last = null;
-    view.innerHTML = '<h1>Shows &amp; characters</h1><p class="muted">Tap a show to see everything for it, or a character for their complete set. Tag items on their edit form under <b>Shows &amp; characters it is for</b>.</p>' +
+    view.innerHTML = '<h1>Shows</h1>' +
+      '<form class="card" id="nsf"><h3>Add a show</h3><label>Show name<input id="nsn" placeholder="e.g. Romeo and Juliet" required></label><button class="btn big">Add show</button></form>' +
+      '<p class="muted small">Tap a show to add its characters and see everything for it.</p>' +
       '<div class="search"><input id="cq" type="search" placeholder="Find a show or character…"></div><div class="list" id="cl">' +
       rs.map((r) => {
         const head = (r.show || 'No show named') !== last ? '<a class="it" href="' + showHref(r.show) + '" data-nav data-key="' + esc((r.show || '').toLowerCase()) + '" style="margin-top:10px;border-width:2px"><div class="th">🎭</div><div class="bd"><div class="nm">' + esc(last = (r.show || 'No show named')) + '</div><div class="mt">Whole show — all characters and items</div></div></a>' : '';
         return head + (r.character ? '<a class="it" href="' + setHref(r) + '" data-nav data-key="' + esc((r.show + ' ' + r.character).toLowerCase()) + '" style="margin-left:18px"><div class="th">☺</div><div class="bd"><div class="nm">' + esc(r.character) + '</div><div class="mt">' + r.n + ' item' + (r.n === 1 ? '' : 's') + '</div></div></a>' : '');
       }).join('') + '</div>' + (rs.length ? '' : '<div class="card empty">Nothing tagged yet. Open an item, tap <b>Edit details</b>, and add a show and character.</div>');
     $('#cq').addEventListener('input', (e) => { const q = e.target.value.toLowerCase(); $$('#cl a').forEach((a) => { a.style.display = a.dataset.key.includes(q) ? '' : 'none'; }); });
+    $('#nsf').onsubmit = async (e) => { e.preventDefault(); const n = $('#nsn').value.trim();
+      try { const r = await api('POST', '/api/shows', { name: n }); D.shows = r.shows; toast('Added ' + n + ' — now add its characters', 'good'); go(showHref(r.show.name)); } catch (er) { toast(er.message, 'bad'); } };
   }
   function showPage(show) {
     const inShow = (r) => (r.show || '').toLowerCase() === show.toLowerCase();
     const its = D.items.filter((i) => (i.roles || []).some(inShow));
     const chars = new Map();
+    rosterChars(show).forEach((c) => chars.set(c.toLowerCase(), { show, character: c, n: 0 }));
     its.forEach((i) => i.roles.filter(inShow).forEach((r) => { if (!r.character) return; const k = r.character.toLowerCase(); if (!chars.has(k)) chars.set(k, { show: r.show, character: r.character, n: 0 }); chars.get(k).n++; }));
     const byDept = {}; its.forEach((i) => { const d = (deptOf(i.code) || { name: i.category }).name; (byDept[d] = byDept[d] || []).push(i); });
     const who = (i) => i.roles.filter(inShow).map(roleLabel).join(', ');
@@ -603,12 +651,15 @@
     view.innerHTML = '<span class="muted small">SHOW</span><h1>' + esc(show) + '</h1>' +
       '<div class="card"><div class="stats"><div><b>' + its.length + '</b><span>Items</span></div><div><b>' + chars.size + '</b><span>Characters</span></div><div><b>' + out + '</b><span>Out now</span></div></div>' +
       '<div class="row" style="margin-top:10px"><button class="btn alt sm" id="prShow"' + (its.length ? '' : ' disabled') + '>Print stickers for this show</button><button class="btn alt sm" onclick="window.print()">Print this list</button><a class="btn alt sm" href="/api/export.csv">Spreadsheet</a></div></div>' +
+      '<form class="card" id="ncf" style="margin-top:12px"><h3>Add a character</h3><div class="row" style="flex-wrap:nowrap"><input id="ncn" placeholder="e.g. Galloway" required style="margin:0;flex:1;min-width:0"><button class="btn" style="flex:none">Add</button></div></form>' +
       '<div class="sect"><h2>Characters</h2></div><div class="list">' + [...chars.values()].sort((a, b) => a.character.localeCompare(b.character)).map((r) =>
         '<a class="it" href="' + setHref(r) + '" data-nav><div class="th">☺</div><div class="bd"><div class="nm">' + esc(r.character) + '</div><div class="mt">' + r.n + ' item' + (r.n === 1 ? '' : 's') + '</div></div></a>').join('') + '</div>' +
       (chars.size ? '' : '<div class="card empty">No characters tagged for this show yet.</div>') +
       Object.keys(byDept).sort().map((d) => '<div class="sect"><h2>' + esc(d) + '</h2></div><div class="list">' + byDept[d].sort((a, b) => a.name.localeCompare(b.name)).map((i) => rowHtml(i, '<div class="mt">' + esc(who(i)) + ' · ' + esc(locName(i.location) || 'No place set') + '</div>')).join('') + '</div>').join('') +
       (its.length ? '' : '<div class="card empty">Nothing tagged for this show yet.</div>');
     if ($('#prShow')) $('#prShow').onclick = () => printCodes(its.map((i) => i.code));
+    $('#ncf').onsubmit = async (e) => { e.preventDefault(); const n = $('#ncn').value.trim();
+      try { const r = await api('POST', '/api/shows', { name: show, character: n }); D.shows = r.shows; toast('Added ' + n, 'good'); showPage(show); } catch (er) { toast(er.message, 'bad'); } };
   }
   // A search that names a show gets a link to that show's page.
   function showMatches(q) {

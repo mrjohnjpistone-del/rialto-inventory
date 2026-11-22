@@ -106,6 +106,7 @@ function freshStore() {
     removed: [],
     pending_photos: [],
     admins: [],          // department-head logins: { id, name, user, salt, hash, ver, manager, must_change }
+    shows: [],           // roster: [{ name, characters: [..] }] — picked from on the item form
   };
 }
 
@@ -126,6 +127,7 @@ function normalize(d) {
     removed: Array.isArray(d && d.removed) ? d.removed : [],
     pending_photos: Array.isArray(d && d.pending_photos) ? d.pending_photos : [],
     admins: Array.isArray(d && d.admins) ? d.admins : [],
+    shows: Array.isArray(d && d.shows) ? d.shows : [],
   };
   if (!out.settings.secret) out.settings.secret = crypto.randomBytes(32).toString('hex');
   if (!Array.isArray(out.settings.departments) || !out.settings.departments.length)
@@ -353,6 +355,21 @@ function codeTaken(code) { return !!findItem(code) || store.removed.some((i) => 
 function prefixOf(code) { return String(code).split('-')[0]; }
 function deptByPrefix(p) { return store.settings.departments.find((d) => d.p === p); }
 function deptByName(n) { n = String(n || '').toLowerCase(); return store.settings.departments.find((d) => d.name.toLowerCase() === n || d.p.toLowerCase() === n); }
+function rosterShow(name, create) {
+  let sh = store.shows.find((x) => x.name.toLowerCase() === String(name).toLowerCase());
+  if (!sh && create && name) { sh = { name, characters: [] }; store.shows.push(sh); store.shows.sort((a, b) => a.name.localeCompare(b.name)); }
+  return sh;
+}
+// Shows/characters typed on an item join the roster, so they show up in the pick-lists.
+function syncRoster(roles) {
+  let changed = false;
+  for (const r of roles || []) {
+    if (!r.show) continue;
+    const had = rosterShow(r.show, false); const sh = rosterShow(r.show, true); if (!had) changed = true;
+    if (r.character && !sh.characters.some((c) => c.toLowerCase() === r.character.toLowerCase())) { sh.characters.push(r.character); sh.characters.sort((a, b) => a.localeCompare(b)); changed = true; }
+  }
+  return changed;
+}
 function findLoc(code) { return store.locations.find((l) => l.code === code); }
 function pad(n, w) { return String(n).padStart(w, '0'); }
 function codeNum(code) { return Number(String(code).split('-')[1]) || 0; }
@@ -417,7 +434,11 @@ function serveStatic(res, rel) {
     'Cache-Control': rel.startsWith('vendor/') ? 'public, max-age=604800' : 'no-cache' });
   res.end(data); return true;
 }
-const APP_ROUTES = /^\/(|i\/[^/]+|l\/[^/]+|add|browse|scan|locations|labels|settings|audit\/[^/]+|recent|characters|set|show)$/i;
+// Fingerprint of the phone app's code: open pages compare it and refresh themselves after a deploy.
+const BUILD = crypto.createHash('sha1').update(['index.html', 'app.js', 'app.css'].map((f) => {
+  try { return fs.readFileSync(path.join(PUBLIC_DIR, f)); } catch (e) { return ''; }
+}).join('|')).digest('hex').slice(0, 12);
+const APP_ROUTES =/^\/(|i\/[^/]+|l\/[^/]+|add|browse|scan|locations|labels|settings|audit\/[^/]+|recent|characters|set|show)$/i;
 
 // ── QR → SVG (server side, for print pages) ──────────────────────────────────
 function qrSvg(text) {
@@ -646,14 +667,14 @@ const server = http.createServer(async (req, res) => {
     if (method === 'GET' && p === '/api/data') {
       const st = store.settings;
       return sendJson(res, 200, {
-        role: r, base: baseUrl(req),
+        role: r, base: baseUrl(req), build: BUILD,
         me: account(req) ? adminOut(account(req)) : (isAdmin ? { name: 'Master admin code', manager: true, master: true } : null),
         admins: isManager(req) ? store.admins.map(adminOut) : [],
         settings: { title: st.title, org: st.org, departments: st.departments, next: st.next, next_loc: st.next_loc,
           categories: st.departments.map((d) => d.name),
           crew_key: isAdmin ? st.crew_key : undefined, admin_key: isAdmin ? st.admin_key : undefined },
         statuses: STATUSES, conditions: CONDITIONS, sizes: Object.fromEntries(Object.entries(SIZES).map(([k, v]) => [k, v.name])),
-        items: store.items.map(itemOut), locations: store.locations,
+        items: store.items.map(itemOut), locations: store.locations, shows: store.shows,
         removed: isAdmin ? store.removed.map((i) => ({ code: i.code, name: i.name, removed_at: i.removed_at, removed_by: i.removed_by })) : [],
       });
     }
@@ -699,7 +720,7 @@ const server = http.createServer(async (req, res) => {
         photos: [], history: [], aliases: [], created_at: now, created_by: by, updated_at: now, updated_by: by, last_seen: now };
       applyFields(item, b);
       log(item, by, 'Added', item.location ? 'at ' + ((findLoc(item.location) || {}).name || item.location) : '');
-      store.items.push(item); save();
+      store.items.push(item); if (syncRoster(item.roles)) broadcast({ t: 'shows', shows: store.shows }); save();
       broadcast({ t: 'item', item: itemOut(item) });
       return sendJson(res, 200, { ok: true, item: itemOut(item) });
     }
@@ -719,6 +740,7 @@ const server = http.createServer(async (req, res) => {
           const rest = changed.filter((c) => c !== 'location').join(', ');
           const mv = changed.includes('location') ? 'moved ' + (prevLoc ? 'from ' + ((findLoc(prevLoc) || {}).name || prevLoc) + ' ' : '') + 'to ' + ((findLoc(item.location) || {}).name || 'no location') : '';
           log(item, by, 'Edited', [mv, rest].filter(Boolean).join('; '));
+          if (syncRoster(item.roles)) broadcast({ t: 'shows', shows: store.shows });
           save(); broadcast({ t: 'item', item: itemOut(item) });
         }
         return sendJson(res, 200, { ok: true, item: itemOut(item) });
@@ -822,6 +844,29 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, item: itemOut(item) });
       }
       return sendJson(res, 404, { error: 'Not found' });
+    }
+
+    // ── Shows roster (add a show, add its characters) ──
+    if (method === 'POST' && p === '/api/shows') {
+      const b = await readBody(req); const name = s(b.name, 120); const character = s(b.character, 80);
+      if (!name) return sendJson(res, 400, { error: 'Type the name of the show.' });
+      const sh = rosterShow(name, true);
+      if (character && !sh.characters.some((c) => c.toLowerCase() === character.toLowerCase())) sh.characters.push(character);
+      sh.characters.sort((a, c) => a.localeCompare(c));
+      save(); broadcast({ t: 'shows', shows: store.shows });
+      return sendJson(res, 200, { ok: true, show: sh, shows: store.shows });
+    }
+    if (method === 'POST' && p === '/api/shows/remove') {
+      if (!isAdmin) return sendJson(res, 403, { error: 'Removing shows or characters needs an admin.' });
+      const b = await readBody(req); const sh = rosterShow(s(b.name, 120), false);
+      if (!sh) return sendJson(res, 404, { error: 'No such show.' });
+      const character = s(b.character, 80);
+      const used = store.items.some((i) => (i.roles || []).some((r) => r.show.toLowerCase() === sh.name.toLowerCase() && (!character || r.character.toLowerCase() === character.toLowerCase())));
+      if (used) return sendJson(res, 409, { error: 'Items are still tagged with it. Remove the tag from those items first.' });
+      if (character) sh.characters = sh.characters.filter((c) => c.toLowerCase() !== character.toLowerCase());
+      else store.shows = store.shows.filter((x) => x !== sh);
+      save(); broadcast({ t: 'shows', shows: store.shows });
+      return sendJson(res, 200, { ok: true, shows: store.shows });
     }
 
     // Locations
