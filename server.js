@@ -438,7 +438,7 @@ function serveStatic(res, rel) {
 const BUILD = crypto.createHash('sha1').update(['index.html', 'app.js', 'app.css'].map((f) => {
   try { return fs.readFileSync(path.join(PUBLIC_DIR, f)); } catch (e) { return ''; }
 }).join('|')).digest('hex').slice(0, 12);
-const APP_ROUTES =/^\/(|i\/[^/]+|l\/[^/]+|add|browse|scan|locations|labels|settings|audit\/[^/]+|recent|characters|set|show)$/i;
+const APP_ROUTES =/^\/(|i\/[^/]+|l\/[^/]+|add|browse|scan|locations|labels|settings|audit\/[^/]+|recent|characters|set|show|upload)$/i;
 
 // ── QR → SVG (server side, for print pages) ──────────────────────────────────
 function qrSvg(text) {

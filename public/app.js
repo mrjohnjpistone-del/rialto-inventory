@@ -185,6 +185,7 @@
     if (p === '/recent') return recent();
     if (p === '/characters') return characters();
     if (p === '/show') return showPage(new URLSearchParams(location.search).get('show') || '');
+    if (p === '/upload') return uploadPage();
     if (p === '/set') return setPage(new URLSearchParams(location.search).get('show') || '', new URLSearchParams(location.search).get('character') || '');
     if ((m = p.match(/^\/i\/(.+)$/i))) return itemPage(normCode(decodeURIComponent(m[1])) || decodeURIComponent(m[1]).toUpperCase());
     if ((m = p.match(/^\/l\/(.+)$/i))) return locPage(normCode(decodeURIComponent(m[1])) || decodeURIComponent(m[1]).toUpperCase());
@@ -210,6 +211,7 @@
       '<a class="tile" href="/browse" data-nav><span class="ic">☰</span><div><b>All items</b><br><span>' + its.length + ' total</span></div></a>' +
       '<a class="tile" href="/locations" data-nav><span class="ic">▦</span><div><b>Places</b><br><span>Racks, shelves, bins · audit</span></div></a>' +
       '<a class="tile" href="/labels" data-nav><span class="ic">▤</span><div><b>Print stickers</b><br><span>Blank or for items</span></div></a>' +
+      '<a class="tile" href="/upload" data-nav><span class="ic">⇪</span><div><b>Upload photos</b><br><span>Many at once — sticker in each shot</span></div></a>' +
       '<a class="tile" href="/characters" data-nav><span class="ic">☺</span><div><b>Shows</b><br><span>Shows, characters &amp; their items</span></div></a>' +
       '</div>' +
       '<div class="card"><div class="stats"><div><b>' + its.length + '</b><span>Items</span></div><div><b>' + out + '</b><span>Out now</span></div><div><b>' + miss + '</b><span>Missing</span></div></div>' +
@@ -432,6 +434,96 @@
   }
 
   // ── Photos: shrink on the phone, then upload ───────────────────────────────
+  // ── Batch photo upload: read the sticker inside each photo ─────────────────
+  // Order of attempts: the phone's built-in reader (fast, Android/Mac), then jsQR on the whole
+  // picture, then jsQR on overlapping tiles at near-full resolution so a small sticker in a wide
+  // shot of a rack still reads.
+  async function codeInPhoto(file) {
+    let bmp; try { bmp = await createImageBitmap(file); } catch (e) { return null; }
+    const W = bmp.width, H = bmp.height;
+    if ('BarcodeDetector' in window) {
+      try { const det = new window.BarcodeDetector({ formats: ['qr_code'] }); const found = await det.detect(bmp);
+        for (const f of found) { const r = parseScan(f.rawValue); if (r && r.kind === 'item') return r.code; } } catch (e) { /* fall through */ }
+    }
+    await loadJsQR().catch(() => {}); if (!window.jsQR) return null;
+    const c = document.createElement('canvas'); const x = c.getContext('2d', { willReadFrequently: true });
+    const tryRegion = (sx, sy, sw, sh, scale) => {
+      c.width = Math.max(1, Math.round(sw * scale)); c.height = Math.max(1, Math.round(sh * scale));
+      x.drawImage(bmp, sx, sy, sw, sh, 0, 0, c.width, c.height);
+      const q = window.jsQR(x.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: 'attemptBoth' });
+      const r = q && parseScan(q.data); return r && r.kind === 'item' ? r.code : null;
+    };
+    let code = tryRegion(0, 0, W, H, Math.min(1, 1600 / Math.max(W, H))); if (code) return code;
+    const s = Math.min(1, 3200 / Math.max(W, H)); const tile = Math.round(1100 / s), step = Math.round(tile / 2);
+    for (let ty = 0; ty < H; ty += step) {
+      for (let tx = 0; tx < W; tx += step) {
+        code = tryRegion(tx, ty, Math.min(tile, W - tx), Math.min(tile, H - ty), s); if (code) return code;
+        await new Promise((ok) => setTimeout(ok, 0)); // keep the page responsive
+        if (tx + tile >= W) break;
+      }
+      if (ty + tile >= H) break;
+    }
+    return null;
+  }
+  async function attachPhoto(code, file, made) {
+    let it = item(code);
+    if (!it) {
+      if (!deptOf(code)) throw new Error(code + ' is not one of our sticker codes');
+      const r = await api('POST', '/api/items', { code, needs_details: true }); upsert(r.item); it = r.item; made.push(code);
+    }
+    const photo = { full: await shrink(file, 1400, 0.74), thumb: await shrink(file, 360, 0.7) };
+    const r2 = await api('POST', '/api/items/' + it.code + '/photos', photo); upsert(r2.item);
+    return it;
+  }
+  function uploadPage() {
+    editing = false;
+    pinned = true; // live updates from other phones must not wipe the results / "type the code" list
+    view.innerHTML = '<h1>Upload photos</h1>' +
+      '<div class="card"><p>Pick as many photos as you like. Each one needs its <b>sticker clearly visible</b>. The site reads the sticker and puts the photo on that item.</p>' +
+      '<ul class="small muted" style="margin:0 0 12px;padding-left:20px"><li>Sticker in focus, not tiny: about a tenth of the picture or bigger.</li><li>A blank sticker becomes a new item in <b>Need details</b>.</li><li>Photos it cannot read are listed at the bottom so you can type the code.</li></ul>' +
+      '<input type="file" id="bf" accept="image/*" multiple hidden><button class="btn big" id="bp">⇪ Choose photos</button></div>' +
+      '<div id="bsum" class="card" style="display:none"></div><div id="blist" class="list"></div><div id="bmiss"></div>';
+    $('#bp').onclick = () => $('#bf').click();
+    $('#bf').onchange = async (e) => {
+      const files = Array.from(e.target.files || []); if (!files.length) return;
+      $('#bp').disabled = true; editing = true;
+      const list = $('#blist'), sum = $('#bsum'); sum.style.display = '';
+      let done = 0, ok = 0; const misses = [], made = [];
+      const tick = () => { sum.innerHTML = '<b>' + done + ' of ' + files.length + '</b> checked · ' + ok + ' attached' + (made.length ? ' · ' + made.length + ' new (Need details)' : '') + (misses.length ? ' · <span class="audit-miss">' + misses.length + ' need a code</span>' : ''); };
+      tick();
+      for (const f of files) {
+        const url = URL.createObjectURL(f);
+        const row = document.createElement('div'); row.className = 'it';
+        row.innerHTML = '<div class="th" style="background-image:url(' + url + ')"></div><div class="bd"><div class="nm">' + esc(f.name) + '</div><div class="mt">Reading sticker…</div></div>';
+        list.prepend(row);
+        let code = null; try { code = await codeInPhoto(f); } catch (er) { code = null; }
+        if (code) {
+          try { const it = await attachPhoto(code, f, made); ok++;
+            row.querySelector('.mt').innerHTML = '✓ <a href="/i/' + esc(it.code) + '" data-nav>' + esc(it.code) + '</a> · ' + esc(it.name);
+          } catch (er) { row.querySelector('.mt').textContent = '✕ ' + er.message; misses.push({ f, url, row }); }
+        } else { row.querySelector('.mt').innerHTML = '<span class="audit-miss">No sticker found</span>'; misses.push({ f, url, row }); }
+        done++; tick();
+      }
+      editing = false; $('#bp').disabled = false; $('#bp').textContent = '⇪ Choose more photos'; e.target.value = '';
+      if (!misses.length) { toast('All ' + ok + ' photos attached', 'good'); return; }
+      $('#bmiss').innerHTML = '<div class="sect"><h2>Type the code for these</h2></div>' + misses.map((m, i) =>
+        '<div class="card" style="display:flex;gap:12px;align-items:center"><img src="' + m.url + '" style="width:110px;height:110px;object-fit:cover;border-radius:10px;flex:none">' +
+        '<form data-miss="' + i + '" style="flex:1;min-width:0"><input placeholder="Sticker code, e.g. cost21" autocapitalize="characters" required style="margin:0 0 8px">' +
+        '<div class="row"><button class="btn sm">Attach</button><button type="button" class="btn alt sm" data-skip>Skip</button></div></form></div>').join('');
+      $$('#bmiss form').forEach((fm) => {
+        const m = misses[+fm.dataset.miss];
+        fm.querySelector('[data-skip]').onclick = () => fm.closest('.card').remove();
+        fm.onsubmit = async (ev) => {
+          ev.preventDefault(); const code = normCode(fm.querySelector('input').value);
+          if (!code) return toast('Type a code like COST-0021', 'bad');
+          try { const it = await attachPhoto(code, m.f, made); fm.closest('.card').remove(); ok++; tick();
+            m.row.querySelector('.mt').innerHTML = '✓ <a href="/i/' + esc(it.code) + '" data-nav>' + esc(it.code) + '</a> · ' + esc(it.name) + ' (typed)';
+            toast('Attached to ' + it.code, 'good');
+          } catch (er) { toast(er.message, 'bad'); }
+        };
+      });
+    };
+  }
   function shrink(file, max, q) {
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(file); const img = new Image();
