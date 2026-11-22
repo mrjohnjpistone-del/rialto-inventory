@@ -170,6 +170,7 @@
     if (p === '/settings') return settings();
     if (p === '/recent') return recent();
     if (p === '/characters') return characters();
+    if (p === '/show') return showPage(new URLSearchParams(location.search).get('show') || '');
     if (p === '/set') return setPage(new URLSearchParams(location.search).get('show') || '', new URLSearchParams(location.search).get('character') || '');
     if ((m = p.match(/^\/i\/(.+)$/i))) return itemPage(normCode(decodeURIComponent(m[1])) || decodeURIComponent(m[1]).toUpperCase());
     if ((m = p.match(/^\/l\/(.+)$/i))) return locPage(normCode(decodeURIComponent(m[1])) || decodeURIComponent(m[1]).toUpperCase());
@@ -194,7 +195,7 @@
       '<a class="tile" href="/browse" data-nav><span class="ic">☰</span><div><b>All items</b><br><span>' + its.length + ' total</span></div></a>' +
       '<a class="tile" href="/locations" data-nav><span class="ic">▦</span><div><b>Places</b><br><span>Racks, shelves, bins · audit</span></div></a>' +
       '<a class="tile" href="/labels" data-nav><span class="ic">▤</span><div><b>Print stickers</b><br><span>Blank or for items</span></div></a>' +
-      '<a class="tile" href="/characters" data-nav><span class="ic">☺</span><div><b>Characters</b><br><span>Everything for one role</span></div></a>' +
+      '<a class="tile" href="/characters" data-nav><span class="ic">☺</span><div><b>Shows &amp; characters</b><br><span>Everything for a show or role</span></div></a>' +
       '</div>' +
       '<div class="card"><div class="stats"><div><b>' + its.length + '</b><span>Items</span></div><div><b>' + out + '</b><span>Out now</span></div><div><b>' + miss + '</b><span>Missing</span></div></div>' +
       '<div class="row" style="margin-top:10px"><a class="btn alt sm" data-nav href="/browse?status=Checked out">Who has what</a><a class="btn alt sm" data-nav href="/browse?photo=none">' + nophoto + ' need photos</a></div></div>' +
@@ -202,7 +203,9 @@
       (recentList.length ? '<div class="list">' + recentList.map((i) => rowHtml(i, '<div class="mt">' + esc((i.history[0] || {}).action || '') + ' · ' + esc(i.updated_by || '') + ' · ' + esc(when(i.updated_at)) + '</div>')).join('') + '</div>'
         : '<div class="card empty">Nothing yet. Tap <b>Scan a sticker</b> on a blank label, or <b>Add item</b>, to start.</div>');
     $('#scanT').onclick = () => openScanner({ mode: 'go' });
-    $('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { const c = codeTarget(e.target.value); go(c || '/browse?q=' + encodeURIComponent(e.target.value)); } });
+    $('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter') {
+      const v = e.target.value, c = codeTarget(v), sm = showMatches(v);
+      go(c || (sm.length === 1 && sm[0].toLowerCase() === v.trim().toLowerCase() ? showHref(sm[0]) : '/browse?q=' + encodeURIComponent(v))); } });
   }
 
   function recent() {
@@ -227,7 +230,7 @@
       '<select id="fl">' + locOpts(st.loc).replace('— No location yet —', 'Any place') + '<option value="none"' + (st.loc === 'none' ? ' selected' : '') + '>No place set</option></select>' +
       '<select id="fp">' + opts([['none', 'No photo'], ['has', 'Has photo']], st.photo, 'Photos: any') + '</select>' +
       '<select id="fo">' + opts([['name', 'A → Z'], ['new', 'Newest'], ['updated', 'Recently changed'], ['code', 'Sticker code']], st.sort) + '</select>' +
-      '</div><p class="muted small" id="cnt"></p><div class="list" id="res"></div>' +
+      '</div><div id="showHit"></div><p class="muted small" id="cnt"></p><div class="list" id="res"></div>' +
       '<div class="row" style="margin-top:14px"><button class="btn alt" id="printRes">Print stickers for these</button><a class="btn alt" href="/api/export.csv">Download spreadsheet</a></div>';
     const sync = () => {
       st.q = $('#bq').value; st.cat = $('#fc').value; st.status = $('#fs').value; st.loc = $('#fl').value; st.photo = $('#fp').value; st.sort = $('#fo').value; LS.set('sort', st.sort);
@@ -256,6 +259,8 @@
     }
     function draw() {
       const r = filtered();
+      const sm = showMatches(st.q);
+      $('#showHit').innerHTML = sm.map((s) => '<a class="banner" style="display:block;text-decoration:none" href="' + showHref(s) + '" data-nav>🎭 <b>' + esc(s) + '</b> — see every character and item in this show →</a>').join('');
       $('#cnt').textContent = r.length + ' of ' + D.items.length + ' items' + (r.length ? ' · ' + r.reduce((a, i) => a + (i.qty || 1), 0) + ' pieces' : '');
       $('#res').innerHTML = r.slice(0, 400).map((i) => rowHtml(i)).join('') + (r.length > 400 ? '<p class="muted">Showing the first 400 — search to narrow it down.</p>' : '') +
         (r.length ? '' : '<div class="card empty">No matches.</div>');
@@ -304,7 +309,7 @@
       (it.value ? '<dt>Value</dt><dd>$' + Number(it.value).toFixed(2) + '</dd>' : '') +
       (it.description ? '<dt>Description</dt><dd>' + esc(it.description) + '</dd>' : '') +
       (it.notes ? '<dt>Notes</dt><dd>' + esc(it.notes) + '</dd>' : '') +
-      ((it.roles || []).length ? '<dt>Characters</dt><dd>' + it.roles.map((r) => '<a href="' + setHref(r) + '" data-nav>' + esc(r.character) + (r.show ? ' <span class="muted">· ' + esc(r.show) + '</span>' : '') + '</a>').join('<br>') + '</dd>' : '') +
+      ((it.roles || []).length ? '<dt>Shows / characters</dt><dd>' + it.roles.map((r) => '<a href="' + setHref(r) + '" data-nav>' + esc(roleLabel(r)) + '</a>' + (r.show ? ' <a class="muted" href="' + showHref(r.show) + '" data-nav>· ' + esc(r.show) + '</a>' : '')).join('<br>') + '</dd>' : '') +
       '<dt>Last seen</dt><dd>' + esc(when(it.last_seen) || '—') + '</dd>' +
       '</dl><div class="row" style="margin-top:14px"><button class="btn alt" id="ed">Edit details</button>' +
       (it.status !== 'Missing' ? '<button class="btn alt" id="ms">Can\'t find it</button>' : '') + '</div></div>' +
@@ -437,7 +442,9 @@
       '</details>';
   }
   // ── Characters (show + character) ─────────────────────────────────────────
-  const setHref = (r) => '/set?show=' + encodeURIComponent(r.show || '') + '&character=' + encodeURIComponent(r.character);
+  const setHref = (r) => r.character ? '/set?show=' + encodeURIComponent(r.show || '') + '&character=' + encodeURIComponent(r.character) : showHref(r.show);
+  const showHref = (s) => '/show?show=' + encodeURIComponent(s || '');
+  const roleLabel = (r) => r.character || 'Whole show';
   function allRoles() {
     const m = new Map();
     D.items.forEach((i) => (i.roles || []).forEach((r) => { const k = (r.show + '|' + r.character).toLowerCase(); if (!m.has(k)) m.set(k, { show: r.show, character: r.character, n: 0 }); m.get(k).n++; }));
@@ -445,12 +452,12 @@
   }
   function roleRow(r) {
     return '<div class="row role" style="gap:6px;margin-bottom:6px;flex-wrap:nowrap"><input class="r_show" list="dl_shows" placeholder="Show (e.g. A Few Good Men)" value="' + esc((r && r.show) || LS.get('lastShowRole', '')) + '" style="margin:0;flex:1.3;min-width:0">' +
-      '<input class="r_char" list="dl_chars" placeholder="Character (e.g. Galloway)" value="' + esc((r && r.character) || '') + '" style="margin:0;flex:1;min-width:0">' +
+      '<input class="r_char" list="dl_chars" placeholder="Character (blank = whole show)" value="' + esc((r && r.character) || '') + '" style="margin:0;flex:1;min-width:0">' +
       '<button type="button" class="btn alt sm" data-delrole title="Remove" style="flex:none">✕</button></div>';
   }
   function rolesHtml(roles) {
     const rs = allRoles();
-    return '<div style="margin:0 0 12px"><div style="font-weight:650;font-size:.92rem;margin-bottom:5px">Characters it is for <span class="muted small">(show · character)</span></div>' +
+    return '<div style="margin:0 0 12px"><div style="font-weight:650;font-size:.92rem;margin-bottom:5px">Shows &amp; characters it is for <span class="muted small">(leave character blank for the whole show)</span></div>' +
       '<div id="roles">' + (roles || []).map(roleRow).join('') + '</div>' +
       '<button type="button" class="btn alt sm" data-addrole>+ Add a character</button>' +
       '<datalist id="dl_shows">' + [...new Set(rs.map((r) => r.show).filter(Boolean))].map((s) => '<option value="' + esc(s) + '">').join('') + '</datalist>' +
@@ -461,7 +468,7 @@
     const del = e.target.closest('[data-delrole]'); if (del) { e.preventDefault(); del.closest('.role').remove(); }
   });
   function readRoles(root) {
-    return $$('#roles .role', root).map((r) => ({ show: $('.r_show', r).value.trim(), character: $('.r_char', r).value.trim() })).filter((r) => r.character);
+    return $$('#roles .role', root).map((r) => ({ show: $('.r_show', r).value.trim(), character: $('.r_char', r).value.trim() })).filter((r) => r.character || r.show);
   }
   function readFields(root) {
     const o = {};
@@ -577,20 +584,43 @@
   function characters() {
     const rs = allRoles().sort((a, b) => (a.show || '').localeCompare(b.show || '') || a.character.localeCompare(b.character));
     let last = null;
-    view.innerHTML = '<h1>Characters</h1><p class="muted">Every costume piece, accessory and prop tagged for a character — the complete set in one place. Tag items on their edit form under <b>Characters it is for</b>.</p>' +
-      '<div class="search"><input id="cq" type="search" placeholder="Find a character or show…"></div><div class="list" id="cl">' +
+    view.innerHTML = '<h1>Shows &amp; characters</h1><p class="muted">Tap a show to see everything for it, or a character for their complete set. Tag items on their edit form under <b>Shows &amp; characters it is for</b>.</p>' +
+      '<div class="search"><input id="cq" type="search" placeholder="Find a show or character…"></div><div class="list" id="cl">' +
       rs.map((r) => {
-        const head = (r.show || 'No show named') !== last ? '<h3 style="margin:12px 2px 2px" data-show="' + esc((r.show || '').toLowerCase()) + '">' + esc(last = (r.show || 'No show named')) + '</h3>' : '';
-        return head + '<a class="it" href="' + setHref(r) + '" data-nav data-key="' + esc((r.show + ' ' + r.character).toLowerCase()) + '"><div class="th">☺</div><div class="bd"><div class="nm">' + esc(r.character) + '</div><div class="mt">' + r.n + ' item' + (r.n === 1 ? '' : 's') + '</div></div></a>';
-      }).join('') + '</div>' + (rs.length ? '' : '<div class="card empty">No characters yet. Open an item, tap <b>Edit details</b>, and add a character.</div>');
+        const head = (r.show || 'No show named') !== last ? '<a class="it" href="' + showHref(r.show) + '" data-nav data-key="' + esc((r.show || '').toLowerCase()) + '" style="margin-top:10px;border-width:2px"><div class="th">🎭</div><div class="bd"><div class="nm">' + esc(last = (r.show || 'No show named')) + '</div><div class="mt">Whole show — all characters and items</div></div></a>' : '';
+        return head + (r.character ? '<a class="it" href="' + setHref(r) + '" data-nav data-key="' + esc((r.show + ' ' + r.character).toLowerCase()) + '" style="margin-left:18px"><div class="th">☺</div><div class="bd"><div class="nm">' + esc(r.character) + '</div><div class="mt">' + r.n + ' item' + (r.n === 1 ? '' : 's') + '</div></div></a>' : '');
+      }).join('') + '</div>' + (rs.length ? '' : '<div class="card empty">Nothing tagged yet. Open an item, tap <b>Edit details</b>, and add a show and character.</div>');
     $('#cq').addEventListener('input', (e) => { const q = e.target.value.toLowerCase(); $$('#cl a').forEach((a) => { a.style.display = a.dataset.key.includes(q) ? '' : 'none'; }); });
+  }
+  function showPage(show) {
+    const inShow = (r) => (r.show || '').toLowerCase() === show.toLowerCase();
+    const its = D.items.filter((i) => (i.roles || []).some(inShow));
+    const chars = new Map();
+    its.forEach((i) => i.roles.filter(inShow).forEach((r) => { if (!r.character) return; const k = r.character.toLowerCase(); if (!chars.has(k)) chars.set(k, { show: r.show, character: r.character, n: 0 }); chars.get(k).n++; }));
+    const byDept = {}; its.forEach((i) => { const d = (deptOf(i.code) || { name: i.category }).name; (byDept[d] = byDept[d] || []).push(i); });
+    const who = (i) => i.roles.filter(inShow).map(roleLabel).join(', ');
+    const out = its.filter((i) => i.status === 'Checked out' || i.status === 'In a show').length;
+    view.innerHTML = '<span class="muted small">SHOW</span><h1>' + esc(show) + '</h1>' +
+      '<div class="card"><div class="stats"><div><b>' + its.length + '</b><span>Items</span></div><div><b>' + chars.size + '</b><span>Characters</span></div><div><b>' + out + '</b><span>Out now</span></div></div>' +
+      '<div class="row" style="margin-top:10px"><button class="btn alt sm" id="prShow"' + (its.length ? '' : ' disabled') + '>Print stickers for this show</button><button class="btn alt sm" onclick="window.print()">Print this list</button><a class="btn alt sm" href="/api/export.csv">Spreadsheet</a></div></div>' +
+      '<div class="sect"><h2>Characters</h2></div><div class="list">' + [...chars.values()].sort((a, b) => a.character.localeCompare(b.character)).map((r) =>
+        '<a class="it" href="' + setHref(r) + '" data-nav><div class="th">☺</div><div class="bd"><div class="nm">' + esc(r.character) + '</div><div class="mt">' + r.n + ' item' + (r.n === 1 ? '' : 's') + '</div></div></a>').join('') + '</div>' +
+      (chars.size ? '' : '<div class="card empty">No characters tagged for this show yet.</div>') +
+      Object.keys(byDept).sort().map((d) => '<div class="sect"><h2>' + esc(d) + '</h2></div><div class="list">' + byDept[d].sort((a, b) => a.name.localeCompare(b.name)).map((i) => rowHtml(i, '<div class="mt">' + esc(who(i)) + ' · ' + esc(locName(i.location) || 'No place set') + '</div>')).join('') + '</div>').join('') +
+      (its.length ? '' : '<div class="card empty">Nothing tagged for this show yet.</div>');
+    if ($('#prShow')) $('#prShow').onclick = () => printCodes(its.map((i) => i.code));
+  }
+  // A search that names a show gets a link to that show's page.
+  function showMatches(q) {
+    q = String(q || '').trim().toLowerCase(); if (q.length < 3) return [];
+    return [...new Set(D.items.flatMap((i) => (i.roles || []).map((r) => r.show)).filter(Boolean))].filter((s) => s.toLowerCase().includes(q));
   }
   function setPage(show, character) {
     const match = (r) => r.character.toLowerCase() === character.toLowerCase() && (r.show || '').toLowerCase() === show.toLowerCase();
     const its = D.items.filter((i) => (i.roles || []).some(match));
     const byDept = {}; its.forEach((i) => { const d = (deptOf(i.code) || { name: i.category }).name; (byDept[d] = byDept[d] || []).push(i); });
     const out = its.filter((i) => i.status === 'Checked out' || i.status === 'In a show').length;
-    view.innerHTML = '<span class="muted small">' + esc(show || 'No show named') + '</span><h1>' + esc(character) + '</h1>' +
+    view.innerHTML = '<a class="muted small" href="' + showHref(show) + '" data-nav>' + esc(show || 'No show named') + ' — see the whole show</a><h1>' + esc(character) + '</h1>' +
       '<div class="card"><div class="stats"><div><b>' + its.length + '</b><span>Pieces</span></div><div><b>' + out + '</b><span>Out now</span></div><div><b>' + its.filter((i) => i.status === 'Missing').length + '</b><span>Missing</span></div></div>' +
       '<div class="row" style="margin-top:10px"><button class="btn" id="coAll"' + (its.length ? '' : ' disabled') + '>Check out whole set</button><button class="btn ok" id="ciAll"' + (out ? '' : ' disabled') + '>Return whole set</button></div>' +
       '<div class="row" style="margin-top:8px"><button class="btn alt sm" id="prSet"' + (its.length ? '' : ' disabled') + '>Print stickers for this set</button><button class="btn alt sm" onclick="window.print()">Print this list</button></div></div>' +

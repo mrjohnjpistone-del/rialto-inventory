@@ -392,7 +392,7 @@ function applyFields(item, b) {
     const seen = new Set(); const roles = [];
     for (const r of Array.isArray(b.roles) ? b.roles.slice(0, 20) : []) {
       const show = s(r && r.show, 120), character = s(r && r.character, 80);
-      if (!character) continue;
+      if (!character && !show) continue;      // show-only tags are allowed (set pieces, furniture for the whole show)
       const k = (show + '|' + character).toLowerCase(); if (seen.has(k)) continue;
       seen.add(k); roles.push({ show, character });
     }
@@ -417,7 +417,7 @@ function serveStatic(res, rel) {
     'Cache-Control': rel.startsWith('vendor/') ? 'public, max-age=604800' : 'no-cache' });
   res.end(data); return true;
 }
-const APP_ROUTES = /^\/(|i\/[^/]+|l\/[^/]+|add|browse|scan|locations|labels|settings|audit\/[^/]+|recent|characters|set)$/i;
+const APP_ROUTES = /^\/(|i\/[^/]+|l\/[^/]+|add|browse|scan|locations|labels|settings|audit\/[^/]+|recent|characters|set|show)$/i;
 
 // ── QR → SVG (server side, for print pages) ──────────────────────────────────
 function qrSvg(text) {

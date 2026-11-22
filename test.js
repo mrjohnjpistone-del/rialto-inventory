@@ -150,11 +150,15 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     r = await call('POST', '/api/items', { name: 'x', code: 'PROP-0010' }); ok(r.s === 409, 'old code is never reissued');
 
     // ── Character sets ──
-    r = await call('PATCH', '/api/items/COST-0001', { roles: [{ show: 'A Few Good Men', character: 'Galloway' }, { show: 'a few good men', character: 'galloway' }, { show: 'X', character: '' }] });
+    r = await call('PATCH', '/api/items/COST-0001', { roles: [{ show: 'A Few Good Men', character: 'Galloway' }, { show: 'a few good men', character: 'galloway' }, { show: '', character: '' }] });
     ok(r.s === 200 && r.j.item.roles.length === 1 && r.j.item.roles[0].character === 'Galloway', 'character tag saved, duplicates and blanks dropped');
     r = await call('POST', '/api/items', { name: 'Galloway ribbons', category: 'Accessories & jewelry', roles: [{ show: 'A Few Good Men', character: 'Galloway' }] });
     ok(r.s === 200 && r.j.item.roles.length === 1, 'new item created with a character');
     r = await call('GET', '/api/export.csv'); ok(r.t.includes('A Few Good Men: Galloway'), 'csv lists characters');
+    r = await call('PATCH', '/api/items/FURN-0001', { roles: [{ show: 'Romeo and Juliet', character: '' }] });
+    ok(r.s === 200 && r.j.item.roles.length === 1 && r.j.item.roles[0].show === 'Romeo and Juliet', 'show-only tag (whole show) accepted');
+    r = await fetch(INV + '/show?show=Romeo%20and%20Juliet', { headers: { cookie } }); ok(r.status === 200, 'show page route serves the app');
+    await call('PATCH', '/api/items/FURN-0001', { roles: [] });
     r = await fetch(INV + '/set?show=A%20Few%20Good%20Men&character=Galloway', { headers: { cookie } }); ok(r.status === 200, 'set page route serves the app');
     await call('DELETE', '/api/items/' + (await call('GET', '/api/data')).j.items.find((i) => i.name === 'Galloway ribbons').code);
 
