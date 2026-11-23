@@ -158,6 +158,7 @@
     const meta = [it.code, it.location ? locPath(it.location) : where, it.holder ? 'with ' + it.holder : '', it.qty > 1 ? '×' + it.qty : ''].filter(Boolean).join(' · ');
     return '<a class="it" href="/i/' + esc(it.code) + '" data-nav>' + thumb(it) + '<div class="bd"><div class="nm">' + chip(it.code) + ' ' + esc(it.name) + '</div><div class="mt">' + esc(meta) + (it.size ? ' · ' + esc(it.size) : '') + '</div>' +
       (activeTemp(it).length ? '<div class="mt" style="color:var(--warn);font-weight:700">✂ temporary alteration to undo</div>' : '') +
+      ((it.links || []).length ? '<div class="mt">🔗 goes with ' + esc(it.links.join(', ')) + '</div>' : '') +
       (extra || '') + '</div>' + pill(it.status) + '</a>';
   }
   function qrMake(text) {
@@ -416,6 +417,7 @@
       '</dl><div class="row" style="margin-top:14px"><button class="btn alt" id="ed">Edit details</button>' +
       (copySources(it).length ? '<button class="btn alt" id="cfb">📋 Copy details from…</button>' : '') +
       (it.status !== 'Missing' ? '<button class="btn alt" id="ms">Can\'t find it</button>' : '') + '</div></div>' +
+      linksCard(it) +
       alterCard(it) +
       '<div class="card"><h3>More just like this one?</h3><p class="muted small">Identical items (ten green web belts)? Tap <b>Scan stickers to copy</b> and scan each one\'s sticker: each gets these details' + (it.photos.length ? ' and this photo' : '') + '. No new photos, no typing.</p>' +
       '<div class="row"><button class="btn" id="cpy">⌗ Scan stickers to copy</button><button class="btn alt" id="cpyN">📋 Copy to several at once</button></div></div>' +
@@ -444,6 +446,11 @@
     if ($('#cfb')) $('#cfb').onclick = () => editForm(it, null, true);
     $('#cpy').onclick = () => copyToSticker(it);
     $('#altAdd').onclick = () => alterForm(it);
+    $('#lnAdd').onclick = () => linkPiece(it);
+    $$('[data-unlink]').forEach((b) => b.onclick = async () => {
+      if (!confirm('Unlink ' + b.dataset.unlink + ' from this piece?')) return;
+      try { const r = await api('POST', '/api/items/' + it.code + '/links', { code: b.dataset.unlink, action: 'remove' }); upsert(r.item); upsert(r.other); render(true); } catch (e) { toast(e.message, 'bad'); }
+    });
     $$('[data-alt]').forEach((b) => b.onclick = async () => {
       const [id, action] = b.dataset.alt.split(':');
       if (action === 'delete' && !confirm('Delete this alteration record? (Use this only for a mistake.)')) return;
@@ -496,12 +503,16 @@
       '<button class="btn big" id="sc">⌗ Scan the shelf / bin sticker</button><p class="muted" style="text-align:center;margin:12px 0">or pick it</p>' +
       '<label>Place<select id="lc">' + locOpts(it.location) + '</select></label>' +
       '<label>Spot within it (optional)<input id="sub" placeholder="e.g. top shelf, left end" value="' + esc(it.sublocation || '') + '"></label>' +
+      (linked(it).length ? '<label class="check" style="margin:0 0 12px"><input type="checkbox" id="mvLinked" checked> Also move ' + esc(linked(it).map((o) => o.name).join(', ')) + '</label>' : '') +
       '<button class="btn blue big" id="ok">Save place</button>' + (it.location ? '<button type="button" class="btn alt big" id="tout" style="margin-top:8px">Take it out of ' + esc(locName(it.location)) + ' (no place yet)</button>' : '') +
       '<button type="button" class="btn alt big" data-close style="margin-top:8px">Cancel</button>',
     (m, close) => {
       if ($('#tout', m)) $('#tout', m).onclick = () => { close(); takeOut([it.code]); };
-      $('#ok', m).onclick = async () => { close(); await act(it.code, { action: 'move', location: $('#lc', m).value, sublocation: $('#sub', m).value }, 'Place saved'); };
-      $('#sc', m).onclick = () => { close(); openScanner({ mode: 'pickLoc', prompt: 'Scan the shelf / rack / bin sticker', onLoc: (l) => act(it.code, { action: 'move', location: l.code }, 'Now at ' + l.name) }); };
+      const alsoLinked = async (dest) => { if (dest && $('#mvLinked', m) && $('#mvLinked', m).checked) await moveMany(linked(it).map((o) => o.code), dest).catch(() => {}); };
+      $('#ok', m).onclick = async () => { const dest = $('#lc', m).value; const take = $('#mvLinked', m) && $('#mvLinked', m).checked; close();
+        await act(it.code, { action: 'move', location: dest, sublocation: $('#sub', m).value }, 'Place saved'); if (take && dest) await moveMany(linked(it).map((o) => o.code), dest).catch(() => {}); };
+      $('#sc', m).onclick = () => { const take = $('#mvLinked', m) && $('#mvLinked', m).checked; close();
+        openScanner({ mode: 'pickLoc', prompt: 'Scan the shelf / rack / bin sticker', onLoc: async (l) => { await act(it.code, { action: 'move', location: l.code }, 'Now at ' + l.name); if (take) await moveMany(linked(it).map((o) => o.code), l.code).catch(() => {}); } }); };
     });
   }
   // ── Alterations ────────────────────────────────────────────────────────────
@@ -521,6 +532,28 @@
           (live || isAdm ? '<div class="row" style="margin-top:6px">' + (live ? '<button class="btn sm" data-alt="' + a.id + ':undo">✓ Mark undone</button><button class="btn alt sm" data-alt="' + a.id + ':permanent">Keep it (make permanent)</button>' : '') +
             (isAdm ? '<button class="btn alt sm" style="color:var(--bad)" data-alt="' + a.id + ':delete">Delete</button>' : '') + '</div>' : '') + '</li>';
       }).join('') + '</ul>' : '<p class="muted small" style="margin:8px 0 0">None recorded. Hemmed, taken in, dyed, cut, painted? Log it here.</p>') + '</div>';
+  }
+  // ── Pieces that go together (desk + topper) ────────────────────────────────
+  const linked = (it) => (it.links || []).map(item).filter(Boolean);
+  function linksCard(it) {
+    const ls = linked(it);
+    return '<div class="card"><div class="sect" style="margin:0"><h3 style="margin:0">🔗 Goes with</h3><button class="btn alt sm" id="lnAdd">＋ Link a piece</button></div>' +
+      (ls.length ? '<div class="list" style="margin-top:10px">' + ls.map((o) => '<div class="srow">' + rowHtml(o, '<div class="mt">' + (o.location !== it.location ? '⚠ not with this piece · ' : '✓ same place · ') + esc(o.location ? locPath(o.location) : 'no place set') + '</div>') +
+          '<button class="btn alt sm" data-unlink="' + esc(o.code) + '" title="Unlink" style="flex:none">✕</button></div>').join('') + '</div>'
+        : '<p class="muted small" style="margin:8px 0 0">Two-piece item, like a desk and its topper or a table and its leaf? Give each piece its own sticker, then link them here.</p>') + '</div>';
+  }
+  function linkPiece(it) {
+    const cands = D.items.filter((o) => o.code !== it.code && !(it.links || []).includes(o.code)).sort((a, b) => a.name.localeCompare(b.name));
+    modal('<h2>Link a piece to ' + esc(it.name) + '</h2><button class="btn big" id="lnScan">⌗ Scan the other piece\'s sticker</button>' +
+      '<p class="muted" style="text-align:center;margin:12px 0">or type / pick it</p><label>Sticker code or item<input id="lnq" list="lnl" placeholder="e.g. furn2, or start typing a name"><datalist id="lnl">' +
+      cands.map((o) => '<option value="' + esc(o.code) + '">' + esc(o.name) + '</option>').join('') + '</datalist></label>' +
+      '<button class="btn blue big" id="lnOk">Link them</button><button class="btn alt big" data-close style="margin-top:8px">Cancel</button>',
+    (m, close) => {
+      const doLink = async (code) => { try { const r = await api('POST', '/api/items/' + it.code + '/links', { code }); upsert(r.item); upsert(r.other); close(); render(true);
+        toast(it.name + ' ↔ ' + r.other.name + ' linked', 'good'); } catch (er) { toast(er.message, 'bad'); } };
+      $('#lnOk', m).onclick = () => { const v = $('#lnq', m).value.trim(); if (!v) return toast('Type or pick the other piece.', 'bad'); doLink(normCode(v) || v); };
+      $('#lnScan', m).onclick = () => { close(); openScanner({ mode: 'pickItem', prompt: 'Scan the other piece\'s sticker', onItem: (code) => doLink(code) }); };
+    });
   }
   function alterForm(it) {
     const shows = (D.shows || []).map((s) => s.name);
@@ -1237,6 +1270,10 @@
           msg.textContent = o.n + ' done. Scan the next one, or tap Done.'; }
         catch (er) { msg.textContent = er.message; }
         return;
+      }
+      if (o.mode === 'pickItem') {
+        if (r.kind === 'loc') { msg.textContent = 'That is a place sticker. Scan the other piece.'; return; }
+        closeScanner(); o.onItem(r.code); return;
       }
       if (o.mode === 'pickLoc') {
         if (r.kind !== 'loc') { msg.textContent = 'That is an item sticker — scan the shelf/bin sticker.'; return; }

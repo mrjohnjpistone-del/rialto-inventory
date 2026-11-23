@@ -934,6 +934,25 @@ const server = http.createServer(async (req, res) => {
         log(item, by, 'Removed photo', ''); save(); broadcast({ t: 'item', item: itemOut(item) });
         return sendJson(res, 200, { ok: true, item: itemOut(item) });
       }
+      // Pieces that go together (desk + desk topper): a two-way link, each piece keeps its own sticker.
+      if (method === 'POST' && sub === '/links') {
+        const b = await readBody(req);
+        const other = findItem(normCode(b.code || '') || String(b.code || '').toUpperCase());
+        if (!other) return sendJson(res, 404, { error: 'No item with sticker ' + (b.code || '') + '.' });
+        if (other.code === item.code) return sendJson(res, 400, { error: 'That is this item\'s own sticker.' });
+        const now = new Date().toISOString();
+        if (b.action === 'remove') {
+          item.links = (item.links || []).filter((c) => c !== other.code); other.links = (other.links || []).filter((c) => c !== item.code);
+          log(item, by, 'Unlinked', other.code); log(other, by, 'Unlinked', item.code);
+        } else {
+          if ((item.links || []).includes(other.code)) return sendJson(res, 200, { ok: true, item: itemOut(item), other: itemOut(other) });
+          item.links = (item.links || []).concat(other.code).slice(0, 20); other.links = (other.links || []).concat(item.code).slice(0, 20);
+          log(item, by, 'Linked', 'goes with ' + other.code + ' ' + other.name); log(other, by, 'Linked', 'goes with ' + item.code + ' ' + item.name);
+        }
+        item.updated_at = other.updated_at = now; item.updated_by = other.updated_by = by;
+        save(); broadcast({ t: 'item', item: itemOut(item) }); broadcast({ t: 'item', item: itemOut(other) });
+        return sendJson(res, 200, { ok: true, item: itemOut(item), other: itemOut(other) });
+      }
       // Alterations: what was changed on the item, Permanent or Temporary (temporary ones must be undone).
       if (method === 'POST' && sub === '/alterations') {
         const b = await readBody(req);

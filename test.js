@@ -216,6 +216,17 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     r = await call('POST', '/api/locations', { name: 'Bin 9', parent: shelf });
     ok(r.s === 200 && r.j.loc.parent === shelf, 'a new bin can be created already on its shelf');
 
+    // Two-piece items: desk + topper linked both ways, then unlinked
+    await call('POST', '/api/items', { code: 'FURN-0050', name: 'Office desk', category: 'FURN' });
+    await call('POST', '/api/items', { code: 'FURN-0051', name: 'Desk topper with shelves', category: 'FURN' });
+    r = await call('POST', '/api/items/FURN-0050/links', { code: 'furn51' });
+    ok(r.s === 200 && r.j.item.links.includes('FURN-0051') && r.j.other.links.includes('FURN-0050'), 'desk and topper linked both ways');
+    r = await call('POST', '/api/items/FURN-0050/links', { code: 'FURN-0050' });
+    ok(r.s === 400, 'an item cannot be linked to itself');
+    r = await call('POST', '/api/items/FURN-0051/links', { code: 'FURN-0050', action: 'remove' });
+    ok(r.s === 200 && !r.j.item.links.length && !r.j.other.links.length, 'unlinking clears both sides');
+    await call('DELETE', '/api/items/FURN-0050'); await call('DELETE', '/api/items/FURN-0051');
+
     // Prompt books always belong to a show
     r = await call('POST', '/api/items', { code: 'BOOK-0001', name: 'SM prompt book' });
     ok(r.s === 400 && /show/.test(r.j.error), 'a prompt book without a show is refused');
