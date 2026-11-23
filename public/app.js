@@ -336,7 +336,7 @@
       return addForm(code, true, src);
     }
     const where = loc(it.location);
-    const needBanner = it.needs_details ? '<div class="banner" style="display:flex;gap:10px;align-items:center;justify-content:space-between"><span><b>Details needed</b> — photo is in; type the rest on the computer.</span><button class="btn sm" id="fillNow">Add details</button></div>' : '';
+    const needBanner = it.needs_details ? '<div class="banner" style="display:flex;gap:10px;align-items:center;justify-content:space-between"><span><b>Details needed</b> — photo is in; type the rest on the computer.</span><span class="row" style="flex:none;margin:0"><button class="btn sm" id="fillNow">Add details</button>' + (copySources(it).length ? '<button class="btn alt sm" id="fillCopy">📋 Same as another</button>' : '') + '</span></div>' : '';
     view.innerHTML =
       '<div class="row" style="justify-content:space-between;margin-bottom:8px"><span>' + chip(it.code) + ' <span class="code">' + esc(it.code) + '</span></span>' + pill(it.status) + '</div>' +
       '<h1>' + esc(it.name) + (it.qty > 1 ? ' <span class="muted">×' + it.qty + '</span>' : '') + '</h1>' +
@@ -366,6 +366,7 @@
       ((it.roles || []).length ? '<dt>Shows / characters</dt><dd>' + it.roles.map((r) => '<a href="' + setHref(r) + '" data-nav>' + esc(roleLabel(r)) + '</a>' + (r.show ? ' <a class="muted" href="' + showHref(r.show) + '" data-nav>· ' + esc(r.show) + '</a>' : '')).join('<br>') + '</dd>' : '') +
       '<dt>Last seen</dt><dd>' + esc(when(it.last_seen) || '—') + '</dd>' +
       '</dl><div class="row" style="margin-top:14px"><button class="btn alt" id="ed">Edit details</button>' +
+      (copySources(it).length ? '<button class="btn alt" id="cfb">📋 Copy details from…</button>' : '') +
       (it.status !== 'Missing' ? '<button class="btn alt" id="ms">Can\'t find it</button>' : '') + '</div></div>' +
       alterCard(it) +
       '<div class="card"><h3>More just like this one?</h3><p class="muted small">Identical items (ten green web belts)? Tap <b>Scan stickers to copy</b> and scan each one\'s sticker: each gets these details' + (it.photos.length ? ' and this photo' : '') + '. No new photos, no typing.</p>' +
@@ -391,6 +392,8 @@
     $('#mv').onclick = () => moveItem(it);
     $('#ed').onclick = () => editForm(it);
     if ($('#fillNow')) $('#fillNow').onclick = () => editForm(it);
+    if ($('#fillCopy')) $('#fillCopy').onclick = () => editForm(it, null, true);
+    if ($('#cfb')) $('#cfb').onclick = () => editForm(it, null, true);
     $('#cpy').onclick = () => copyToSticker(it);
     $('#altAdd').onclick = () => alterForm(it);
     $$('[data-alt]').forEach((b) => b.onclick = async () => {
@@ -866,13 +869,27 @@
       };
     });
   }
-  function editForm(it) {
+  // "Same as another one" — pull every detail from an item already filled in (the other tie), then Save.
+  function copySources(it) {
+    return D.items.filter((i) => i.code !== it.code && !i.needs_details && i.category === it.category)
+      .sort((a, b) => a.name.localeCompare(b.name) || a.code.localeCompare(b.code, undefined, { numeric: true }));
+  }
+  function editForm(it, src, focusCopy) {
     editing = true;
+    const base = it.needs_details ? Object.assign({}, it, { name: '' }) : it;
+    const shown = src ? Object.assign({}, base, Object.fromEntries(COPY_FIELDS.filter((k) => k !== 'category' && src[k] != null && src[k] !== '').map((k) => [k, JSON.parse(JSON.stringify(src[k]))]))) : base;
+    const srcs = copySources(it);
     view.innerHTML = '<form class="card" id="ef"><h1>' + (it.needs_details ? 'Add details: ' : 'Edit ') + '<span class="code">' + esc(it.code) + '</span></h1>' +
       (it.photos[0] ? '<img src="/p/' + it.photos[0] + '_t.jpg" style="max-height:160px;border-radius:10px;display:block;margin-bottom:12px">' : '') +
-      fieldsHtml(it.needs_details ? Object.assign({}, it, { name: '' }) : it) +
+      (srcs.length ? '<div class="banner" style="display:block"><label style="margin:0"><b>📋 Same as another item? Copy its details</b>' +
+        '<select id="cfrom"><option value="">— pick the matching item —</option>' + srcs.map((s) => '<option value="' + esc(s.code) + '"' + (src && src.code === s.code ? ' selected' : '') + '>' +
+          esc(s.name + (s.size ? ' · ' + s.size : '') + (s.color ? ' · ' + s.color : '') + ' · ' + s.code) + '</option>').join('') + '</select></label>' +
+        (src ? '<p class="small" style="margin:6px 0 0">Copied from <b>' + esc(src.code) + '</b> — change anything that differs (size?), then <b>Save</b>. This item keeps its own photo and sticker.</p>' : '') + '</div>' : '') +
+      fieldsHtml(shown) +
       '<button class="btn big">Save changes</button><button type="button" class="btn alt big" id="cx" style="margin-top:8px">Cancel</button></form>';
     $('#cx').onclick = () => { editing = false; render(); };
+    if ($('#cfrom')) { $('#cfrom').onchange = (e) => { const s = item(e.target.value); editForm(it, s || null); };
+      if (focusCopy) { $('#cfrom').focus(); $('#cfrom').scrollIntoView({ block: 'center' }); } }
     $('#ef').onsubmit = async (e) => {
       e.preventDefault(); const b = readFields(view); const ch = {};
       delete b.category; // the sticker sets the department; use "Wrong department?" to change it
