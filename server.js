@@ -406,7 +406,7 @@ function log(item, by, action, detail) {
   if (item.history.length > 60) item.history.length = 60;
 }
 const FITS = ["Men's", "Women's", "Unisex", "Children's"];
-const TEXT_FIELDS = { name: 120, category: 60, description: 1500, color: 60, size: 60, period: 80,
+const TEXT_FIELDS = { owner: 120, name: 120, category: 60, description: 1500, color: 60, size: 60, period: 80,
   tags: 200, notes: 1500, holder: 80, show: 120, due: 20, location: 12, sublocation: 80, condition: 30, status: 30 };
 function applyFields(item, b) {
   const changed = [];
@@ -801,11 +801,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === 'GET' && p === '/api/export.csv') {
-      const cols = ['code', 'name', 'category', 'characters', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'fit', 'period', 'tags', 'value', 'alterations', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
+      const cols = ['code', 'name', 'category', 'characters', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'fit', 'period', 'tags', 'value', 'owner', 'alterations', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
       const q = (v) => { let t = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
       const base = baseUrl(req);
       const rows = store.items.map((i) => cols.map((c) => c === 'location_name' ? ((findLoc(i.location) || {}).name || '') :
         c === 'characters' ? (i.roles || []).map((r) => (r.show ? r.show + ': ' : '') + r.character).join('; ') :
+        c === 'owner' ? (i.owner || store.settings.org || '') :
         c === 'fit' ? (i.fit || []).join('; ') :
         c === 'alterations' ? (i.alterations || []).map((a) => a.kind + (a.status === 'Undone' ? ' (undone)' : '') + ': ' + a.what + (a.show ? ' [' + a.show + ']' : '')).join('; ') :
         c === 'photos' ? i.photos.map((x) => base + '/p/' + x + '.jpg').join(' ') : i[c]).map(q).join(','));
@@ -1003,7 +1004,7 @@ const server = http.createServer(async (req, res) => {
         if (item.needs_details || item.name === 'Details needed')
           return sendJson(res, 400, { error: 'Fill in the details of ' + item.code + ' first, then copy them to the others.' });
         const now = new Date().toISOString(); const made = [];
-        const COPY = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
+        const COPY = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'owner', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
         const clone = (v) => (v && typeof v === 'object') ? JSON.parse(JSON.stringify(v)) : v;
         if (Array.isArray(b.codes)) {
           const skipped = [];

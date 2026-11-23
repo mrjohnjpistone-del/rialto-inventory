@@ -216,6 +216,14 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     r = await call('POST', '/api/locations', { name: 'Bin 9', parent: shelf });
     ok(r.s === 200 && r.j.loc.parent === shelf, 'a new bin can be created already on its shelf');
 
+    // Who owns it
+    r = await call('POST', '/api/items', { name: 'Rialto lobby bench', category: 'FURN', owner: 'Rialto Theater' });
+    ok(r.s === 200 && r.j.item.owner === 'Rialto Theater', 'owner saved on a new item');
+    const benchCode = r.j.item.code;
+    r = await fetch(INV + '/api/export.csv', { headers: { cookie } }); const csv2 = await r.text();
+    ok(/Rialto Theater/.test(csv2) && /,owner,/.test(csv2.split('\n')[0]), 'owner appears in the spreadsheet download');
+    await call('DELETE', '/api/items/' + benchCode);
+
     // Two-piece items: desk + topper linked both ways, then unlinked
     await call('POST', '/api/items', { code: 'FURN-0050', name: 'Office desk', category: 'FURN' });
     await call('POST', '/api/items', { code: 'FURN-0051', name: 'Desk topper with shelves', category: 'FURN' });
