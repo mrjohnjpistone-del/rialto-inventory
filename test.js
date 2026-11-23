@@ -178,6 +178,14 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     r = await fetch(INV + '/api/export.csv', { headers: { cookie } }); const csv = await r.text();
     ok(/Permanent: Dyed black/.test(csv) && /Temporary \(undone\): Hemmed/.test(csv), 'alterations appear in the spreadsheet download');
 
+    // Copying FROM an item that still says "Details needed" is refused (it would spread the placeholder name)
+    r = await call('POST', '/api/items', { code: 'ACC-0080', needs_details: true });
+    r = await call('POST', '/api/items/ACC-0080/copies', { codes: ['ACC-0081'] });
+    ok(r.s === 400 && /first/.test(r.j.error), 'cannot copy from an item whose details are not filled in yet');
+    r = await call('PATCH', '/api/items/ACC-0080', { name: 'Details needed' });
+    ok(r.j.item.needs_details === true, 'an item named "Details needed" stays on the need-details list');
+    await call('DELETE', '/api/items/ACC-0080');
+
     // One generic photo shared by identical items (green web belts)
     r = await call('POST', '/api/items', { name: 'Green web belt', category: 'ACC', size: 'One size' });
     const belt = r.j.item.code;

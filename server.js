@@ -140,7 +140,9 @@ function normalize(d) {
   for (const it of out.items) {
     if (!Array.isArray(it.photos)) it.photos = []; if (!Array.isArray(it.history)) it.history = [];
     if (!Array.isArray(it.aliases)) it.aliases = [];
+    if (it.name === 'Details needed') it.needs_details = true;   // the placeholder name always means "still to fill in"
   }
+  if (d && d.tag_usage) out.tag_usage = d.tag_usage;
   return out;
 }
 
@@ -843,6 +845,7 @@ const server = http.createServer(async (req, res) => {
         const changed = applyFields(item, b);
         if (item.auto_fields) item.auto_fields = item.auto_fields.filter((f) => !Object.prototype.hasOwnProperty.call(b, f));
         if (item.needs_details && changed.includes('name') && item.name !== 'Details needed') { delete item.needs_details; changed.push('details added'); }
+        if (item.name === 'Details needed') item.needs_details = true;
         if (changed.length) {
           item.updated_at = new Date().toISOString(); item.updated_by = by;
           const rest = changed.filter((c) => c !== 'location').join(', ');
@@ -964,6 +967,8 @@ const server = http.createServer(async (req, res) => {
         //                details (keeping its own photos); an unused sticker becomes a new item. Nothing to print.
         //  count: N      N brand-new items on the next sticker numbers (they need stickers printed).
         const b = await readBody(req);
+        if (item.needs_details || item.name === 'Details needed')
+          return sendJson(res, 400, { error: 'Fill in the details of ' + item.code + ' first, then copy them to the others.' });
         const now = new Date().toISOString(); const made = [];
         const COPY = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
         const clone = (v) => (v && typeof v === 'object') ? JSON.parse(JSON.stringify(v)) : v;

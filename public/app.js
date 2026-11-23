@@ -370,7 +370,7 @@
       (it.status !== 'Missing' ? '<button class="btn alt" id="ms">Can\'t find it</button>' : '') + '</div></div>' +
       alterCard(it) +
       '<div class="card"><h3>More just like this one?</h3><p class="muted small">Identical items (ten green web belts)? Tap <b>Scan stickers to copy</b> and scan each one\'s sticker: each gets these details' + (it.photos.length ? ' and this photo' : '') + '. No new photos, no typing.</p>' +
-      '<div class="row"><button class="btn" id="cpy">⌗ Scan stickers to copy</button><button class="btn alt" id="cpyN">Make several copies</button></div></div>' +
+      '<div class="row"><button class="btn" id="cpy">⌗ Scan stickers to copy</button><button class="btn alt" id="cpyN">📋 Copy to several at once</button></div></div>' +
       '<div class="card"><div class="qrbox">' + qrSvg(qrUrl(it.code)) + '<div><b>Sticker</b><p class="muted small" style="margin:.3em 0 .6em">Lost or damaged sticker? Print a new one.</p>' +
       '<div class="row"><button class="btn alt sm" id="pr">Print sticker</button><button class="btn alt sm" id="rc">Wrong department?</button></div></div></div></div>' +
       '<div class="card"><h3>History</h3><ul class="hist">' + it.history.map((h) => '<li><b>' + esc(h.action) + '</b>' + (h.detail ? ' — ' + esc(h.detail) : '') + '<br><span class="muted small">' + esc(h.by) + ' · ' + esc(when(h.at)) + '</span></li>').join('') + '</ul></div>' +
@@ -805,6 +805,7 @@
     });
   }
   function copyToSticker(it) {
+    if (it.needs_details || it.name === 'Details needed') return toast('Fill in this item\'s details first, then copy them to the others.', 'bad');
     openScanner({ mode: 'copy', from: it, prompt: 'Scan each matching sticker, one after another' + (it.photos.length ? ' (they share this photo)' : ''), onClose: () => render(true) });
   }
   // Most of the time the twins already wear a printed sticker (often with a phone photo and "Details needed").
@@ -819,12 +820,14 @@
     return [...new Set(out.filter(Boolean))];
   }
   function makeCopies(it) {
+    if (it.needs_details || it.name === 'Details needed') return toast('Fill in this item\'s details first, then copy them to the others.', 'bad');
     const pend = D.items.filter((i) => i.needs_details && i.code !== it.code && i.category === it.category)
       .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
     modal('<h2>Copy the details of ' + esc(it.name) + '</h2>' +
       '<form id="ce"><h3 style="margin:4px 0 6px">Onto stickers you already have</h3>' +
       '<p class="muted small" style="margin-top:0">No printing. Each keeps its own sticker and its own photo.</p>' +
-      (pend.length ? '<p class="small" style="margin:6px 0"><b>Waiting for details</b> (photo taken on the phone) — tick the ones that are the same:</p>' +
+      (pend.length ? '<p class="small" style="margin:6px 0"><b>Waiting for details</b> (photo taken on the phone) — tick every one that is the same:</p>' +
+        '<label class="check" style="margin:0 0 6px"><input type="checkbox" id="pcAll"> Select all ' + pend.length + '</label>' +
         '<div style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:6px 8px;margin-bottom:10px">' +
         pend.map((p) => '<label class="check" style="margin:6px 0;font-weight:500"><input type="checkbox" class="pc" value="' + esc(p.code) + '">' +
           (p.photos[0] ? '<img src="/p/' + p.photos[0] + '_t.jpg" style="width:56px;height:56px;object-fit:cover;border-radius:8px">' : '') +
@@ -840,6 +843,7 @@
       '<button class="btn alt big">Make copies with new stickers</button></form></div></details>' +
       '<button type="button" class="btn alt big" data-close style="margin-top:12px">Cancel</button>',
     (m, close) => {
+      if ($('#pcAll', m)) $('#pcAll', m).onchange = (e) => $$('.pc', m).forEach((c) => { c.checked = e.target.checked; });
       $('#ce', m).onsubmit = async (e) => {
         e.preventDefault();
         const codes = [...new Set($$('.pc', m).filter((c) => c.checked).map((c) => c.value).concat(parseCodeList($('#ct', m).value)))];
@@ -871,7 +875,7 @@
   }
   // "Same as another one" — pull every detail from an item already filled in (the other tie), then Save.
   function copySources(it) {
-    return D.items.filter((i) => i.code !== it.code && !i.needs_details && i.category === it.category)
+    return D.items.filter((i) => i.code !== it.code && !i.needs_details && i.name !== 'Details needed' && i.category === it.category)
       .sort((a, b) => a.name.localeCompare(b.name) || a.code.localeCompare(b.code, undefined, { numeric: true }));
   }
   function editForm(it, src, focusCopy) {
