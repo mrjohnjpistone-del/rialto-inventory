@@ -222,6 +222,12 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     const benchCode = r.j.item.code;
     r = await fetch(INV + '/api/export.csv', { headers: { cookie } }); const csv2 = await r.text();
     ok(/Rialto Theater/.test(csv2) && /,owner,/.test(csv2.split('\n')[0]), 'owner appears in the spreadsheet download');
+    // How we have it, return-by, for sale / rent
+    r = await call('PATCH', '/api/items/' + benchCode, { acquired: 'Loaned to us', source: 'Smith family', return_by: '2026-12-20', for_rent: true, rent_rate: '$15 / week', for_sale: false });
+    ok(r.s === 200 && r.j.item.acquired === 'Loaned to us' && r.j.item.return_by === '2026-12-20' && r.j.item.for_rent === true && r.j.item.rent_rate === '$15 / week' && !r.j.item.for_sale,
+      'loaned-to-us with return date, for rent with a rate');
+    r = await call('PATCH', '/api/items/' + benchCode, { acquired: 'Stolen', return_by: 'next week' });
+    ok(r.j.item.acquired === 'Other' && r.j.item.return_by === '', 'unknown how-we-have-it becomes Other; a non-date return-by is dropped');
     await call('DELETE', '/api/items/' + benchCode);
 
     // Two-piece items: desk + topper linked both ways, then unlinked

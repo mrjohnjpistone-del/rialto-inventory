@@ -78,6 +78,15 @@
   const ORG = () => (D.settings && D.settings.org) || 'Bold Theatre';
   const ownerOf = (i) => (i.owner || '').trim() || ORG();
   const notOurs = (i) => ownerOf(i).toLowerCase() !== ORG().toLowerCase();
+  const ACQ = ['Purchased', 'Donated', 'Made by us', 'Loaned to us', 'Rented', "Venue's property", 'Other'];
+  const mustReturn = (i) => i.acquired === 'Loaned to us' || i.acquired === 'Rented';
+  const todayStr = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  const overdue = (i) => mustReturn(i) && i.return_by && i.return_by < todayStr();
+  function acqLine(i) {
+    if (!i.acquired) return '';
+    const from = i.source ? (i.acquired === 'Donated' ? ' by ' : ' from ') + i.source : '';
+    return i.acquired + from + (mustReturn(i) && i.return_by ? ' · return by ' + i.return_by : '');
+  }
   const ownerList = () => [...new Set([ORG(), 'Rialto Theater'].concat(D.items.map((i) => (i.owner || '').trim()).filter(Boolean)))];
   // "Bin 1 · in Costume loft – Shelf 2": where a place (bin) itself is.
   const locPath = (c) => { const l = loc(c); if (!l) return ''; const par = l.parent && loc(l.parent); return l.name + (par ? ' · in ' + par.name : ''); };
@@ -163,7 +172,8 @@
     return '<a class="it" href="/i/' + esc(it.code) + '" data-nav>' + thumb(it) + '<div class="bd"><div class="nm">' + chip(it.code) + ' ' + esc(it.name) + '</div><div class="mt">' + esc(meta) + (it.size ? ' · ' + esc(it.size) : '') + '</div>' +
       (activeTemp(it).length ? '<div class="mt" style="color:var(--warn);font-weight:700">✂ temporary alteration to undo</div>' : '') +
       ((it.links || []).length ? '<div class="mt">🔗 goes with ' + esc(it.links.join(', ')) + '</div>' : '') +
-      (notOurs(it) ? '<div class="mt" style="color:var(--bad);font-weight:700">Owned by ' + esc(ownerOf(it)) + '</div>' : '') +
+      (it.for_sale || it.for_rent ? '<div class="mt" style="color:var(--ok);font-weight:700">' + esc([it.for_sale ? 'For sale' + (it.sale_price ? ' ' + it.sale_price : '') : '', it.for_rent ? 'For rent' + (it.rent_rate ? ' ' + it.rent_rate : '') : ''].filter(Boolean).join(' · ')) + '</div>' : '') +
+      (notOurs(it) || mustReturn(it) ? '<div class="mt" style="color:var(--bad);font-weight:700">' + esc([notOurs(it) ? 'Owned by ' + ownerOf(it) : '', mustReturn(it) ? it.acquired + (it.return_by ? ' · return by ' + it.return_by : '') : ''].filter(Boolean).join(' · ')) + (overdue(it) ? ' — OVERDUE' : '') + '</div>' : '') +
       (extra || '') + '</div>' + pill(it.status) + '</a>';
   }
   function qrMake(text) {
@@ -238,6 +248,7 @@
     const nophoto = its.filter((i) => !i.photos.length).length;
     const needDet = its.filter((i) => i.needs_details).length;
     const toUndo = its.filter((i) => activeTemp(i).length).length;
+    const toReturn = its.filter(mustReturn).length, late = its.filter(overdue).length;
     const recentList = its.slice().sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')).slice(0, 6);
     const welcome = new URLSearchParams(location.search).get('welcome');
     view.innerHTML =
@@ -255,7 +266,8 @@
       '<div class="card"><div class="stats"><div><b>' + its.length + '</b><span>Items</span></div><div><b>' + out + '</b><span>Out now</span></div><div><b>' + miss + '</b><span>Missing</span></div></div>' +
       '<div class="row" style="margin-top:10px"><a class="btn alt sm" data-nav href="/browse?status=Checked out">Who has what</a><a class="btn alt sm" data-nav href="/browse?photo=none">' + nophoto + ' need photos</a>' +
       '<a class="btn ' + (needDet ? '' : 'alt ') + 'sm" data-nav href="/browse?details=need">' + needDet + ' need details</a>' +
-      '<a class="btn ' + (toUndo ? '' : 'alt ') + 'sm" data-nav href="/browse?alt=undo">' + toUndo + ' alteration' + (toUndo === 1 ? '' : 's') + ' to undo</a></div></div>' +
+      '<a class="btn ' + (toUndo ? '' : 'alt ') + 'sm" data-nav href="/browse?alt=undo">' + toUndo + ' alteration' + (toUndo === 1 ? '' : 's') + ' to undo</a>' +
+      (toReturn ? '<a class="btn ' + (late ? '' : 'alt ') + 'sm" data-nav href="/browse?acq=' + (late ? '__overdue' : '__return') + '">' + (late ? late + ' overdue to return' : toReturn + ' borrowed / rented') + '</a>' : '') + '</div></div>' +
       '<div class="sect"><h2>Latest changes</h2><a href="/recent" data-nav class="small">See all</a></div>' +
       (recentList.length ? '<div class="list">' + recentList.map((i) => rowHtml(i, '<div class="mt">' + esc((i.history[0] || {}).action || '') + ' · ' + esc(i.updated_by || '') + ' · ' + esc(when(i.updated_at)) + '</div>')).join('') + '</div>'
         : '<div class="card empty">Nothing yet. Tap <b>Scan a sticker</b> on a blank label, or <b>Add item</b>, to start.</div>');
@@ -277,7 +289,7 @@
   // ── Browse / search ────────────────────────────────────────────────────────
   function browse(soft) {
     const sp = new URLSearchParams(location.search);
-    const st = { q: sp.get('q') || '', cat: sp.get('cat') || '', status: sp.get('status') || '', loc: sp.get('loc') || '', photo: sp.get('photo') || '', details: sp.get('details') || '', fit: sp.get('fit') || '', alt: sp.get('alt') || '', own: sp.get('own') || '', sort: sp.get('sort') || LS.get('sort', 'name') };
+    const st = { q: sp.get('q') || '', cat: sp.get('cat') || '', status: sp.get('status') || '', loc: sp.get('loc') || '', photo: sp.get('photo') || '', details: sp.get('details') || '', fit: sp.get('fit') || '', alt: sp.get('alt') || '', own: sp.get('own') || '', acq: sp.get('acq') || '', sort: sp.get('sort') || LS.get('sort', 'name') };
     if (soft && $('#bq')) { draw(); return; }
     view.innerHTML = '<h1>Items</h1>' +
       '<div class="search"><input id="bq" type="search" placeholder="Search name, color, size, tag, code…" value="' + esc(st.q) + '"></div>' +
@@ -288,13 +300,14 @@
       '<select id="fp">' + opts([['none', 'No photo'], ['has', 'Has photo']], st.photo, 'Photos: any') + '</select>' +
       '<select id="ffit">' + opts(FITS.map((f) => [f, f]), st.fit, "Men's / Women's / Unisex / Children's") + '</select>' +
       '<select id="fown">' + opts([['__ours', 'Ours (' + ORG() + ')'], ['__notours', 'Not ours (anyone else)']].concat(ownerList().filter((o) => o !== ORG()).map((o) => [o, o])), st.own, 'Owner: anyone') + '</select>' +
+      '<select id="facq">' + opts([['__sale', 'For sale'], ['__rent', 'For rent'], ['__return', 'Must go back (loaned / rented)'], ['__overdue', 'Overdue to return']].concat(ACQ.map((a) => [a, a])), st.acq, 'How we have it: any') + '</select>' +
       '<select id="falt">' + opts([['undo', 'Temporary — to undo'], ['any', 'Any alteration'], ['perm', 'Permanently altered']], st.alt, 'Alterations: any') + '</select>' +
       '<select id="fdt">' + opts([['need', 'Needs details']], st.details, 'Details: any') + '</select>' +
       '<select id="fo">' + opts([['name', 'A → Z'], ['new', 'Newest'], ['updated', 'Recently changed'], ['code', 'Sticker code']], st.sort) + '</select>' +
       '</div><div id="showHit"></div><p class="muted small" id="cnt"></p><div class="list" id="res"></div>' +
       '<div class="row" style="margin-top:14px"><button class="btn alt" id="printRes">Print stickers for these</button><button class="btn alt" id="moveRes">Move these into a place…</button><a class="btn alt" href="/api/export.csv">Download spreadsheet</a></div>';
     const sync = () => {
-      st.q = $('#bq').value; st.cat = $('#fc').value; st.status = $('#fs').value; st.loc = $('#fl').value; st.photo = $('#fp').value; st.details = $('#fdt').value; st.fit = $('#ffit').value; st.alt = $('#falt').value; st.own = $('#fown').value; st.sort = $('#fo').value; LS.set('sort', st.sort);
+      st.q = $('#bq').value; st.cat = $('#fc').value; st.status = $('#fs').value; st.loc = $('#fl').value; st.photo = $('#fp').value; st.details = $('#fdt').value; st.fit = $('#ffit').value; st.alt = $('#falt').value; st.own = $('#fown').value; st.acq = $('#facq').value; st.sort = $('#fo').value; LS.set('sort', st.sort);
       const u = new URLSearchParams(); Object.entries(st).forEach(([k, v]) => { if (v && k !== 'sort') u.set(k, v); });
       history.replaceState(null, '', '/browse' + (u.toString() ? '?' + u : '')); draw();
     };
@@ -313,6 +326,11 @@
         if (st.photo === 'has' && !i.photos.length) return false;
         if (st.details === 'need' && !i.needs_details) return false;
         if (st.fit && !(i.fit || []).includes(st.fit)) return false;
+        if (st.acq === '__sale' && !i.for_sale) return false;
+        if (st.acq === '__rent' && !i.for_rent) return false;
+        if (st.acq === '__return' && !mustReturn(i)) return false;
+        if (st.acq === '__overdue' && !overdue(i)) return false;
+        if (st.acq && st.acq[0] !== '_' && i.acquired !== st.acq) return false;
         if (st.own === '__ours' && notOurs(i)) return false;
         if (st.own === '__notours' && !notOurs(i)) return false;
         if (st.own && st.own[0] !== '_' && ownerOf(i).toLowerCase() !== st.own.toLowerCase()) return false;
@@ -320,7 +338,7 @@
         if (st.alt === 'any' && !(i.alterations || []).length) return false;
         if (st.alt === 'perm' && !(i.alterations || []).some((a) => a.kind === 'Permanent')) return false;
         if (!words.length) return true;
-        const hay = [i.code, i.name, i.category, i.color, i.size, (i.fit || []).join(' '), ownerOf(i), (i.alterations || []).map((a) => a.what + ' ' + a.show).join(' '), i.period, i.tags, i.description, i.notes, i.holder, i.show, locName(i.location), i.sublocation, i.condition,
+        const hay = [i.code, i.name, i.category, i.color, i.size, (i.fit || []).join(' '), ownerOf(i), i.acquired || '', i.source || '', i.for_sale ? 'for sale' : '', i.for_rent ? 'for rent rental' : '', (i.alterations || []).map((a) => a.what + ' ' + a.show).join(' '), i.period, i.tags, i.description, i.notes, i.holder, i.show, locName(i.location), i.sublocation, i.condition,
           (i.roles || []).map((r) => r.show + ' ' + r.character).join(' ')].join(' ').toLowerCase();
         return words.every((w) => hay.includes(w));
       });
@@ -340,7 +358,7 @@
   }
 
   // Fields that carry over when one item is copied to the next sticker (never photos, status or holder).
-  const COPY_FIELDS = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'owner', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
+  const COPY_FIELDS = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'owner', 'acquired', 'source', 'for_sale', 'sale_price', 'for_rent', 'rent_rate', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
   function copyOf() { const c = new URLSearchParams(location.search).get('copy'); return c ? item(c.toUpperCase()) : null; }
 
   // ── Item page ──────────────────────────────────────────────────────────────
@@ -414,6 +432,8 @@
       '<dt>Department</dt><dd>' + esc(it.category) + (deptOf(it.code) && deptOf(it.code).room ? ' <span class="muted">· ' + esc(deptOf(it.code).room) + '</span>' : '') + '</dd>' +
       (it.condition ? '<dt>Condition</dt><dd>' + esc(it.condition) + '</dd>' : '') +
       (it.color ? '<dt>Color</dt><dd>' + esc(it.color) + '</dd>' : '') +
+      (it.for_sale || it.for_rent ? '<dt>Available</dt><dd><b style="color:var(--ok)">' + esc([it.for_sale ? 'For sale' + (it.sale_price ? ' ' + it.sale_price : '') : '', it.for_rent ? 'For rent' + (it.rent_rate ? ' ' + it.rent_rate : '') : ''].filter(Boolean).join(' · ')) + '</b></dd>' : '') +
+      (it.acquired ? '<dt>How we have it</dt><dd>' + (overdue(it) ? '<b style="color:var(--bad)">' + esc(acqLine(it)) + ' — OVERDUE</b>' : esc(acqLine(it))) + '</dd>' : '') +
       '<dt>Owner</dt><dd>' + (notOurs(it) ? '<b style="color:var(--bad)">' + esc(ownerOf(it)) + '</b> <span class="muted small">— not ours</span>' : esc(ownerOf(it))) + '</dd>' +
       (it.size ? '<dt>Size</dt><dd>' + esc(it.size) + '</dd>' : '') +
       ((it.fit || []).length ? '<dt>Fits</dt><dd>' + esc(it.fit.join(', ')) + '</dd>' : '') +
@@ -815,6 +835,12 @@
       '<label>Place<select id="f_location">' + locOpts(v.location) + '</select></label>' +
       '<label>Who owns it? <span class="muted small">(leave as is if it is ours)</span><input id="f_owner" list="ownl" placeholder="' + esc(ORG()) + '" value="' + esc(v.owner || '') + '">' +
         '<datalist id="ownl">' + ownerList().map((o) => '<option value="' + esc(o) + '">').join('') + '</datalist></label>' +
+      '<div class="grid2"><label>How we have it<select id="f_acquired">' + opts(ACQ.map((a) => [a, a]), v.acquired || '', '—') + '</select></label>' +
+      '<label>From / donated by<input id="f_source" placeholder="person, company, store" value="' + esc(v.source || '') + '"></label></div>' +
+      '<label id="rbl" style="display:' + (mustReturn(v) ? 'block' : 'none') + '">Return by <span class="muted small">(pick the date)</span><input id="f_return_by" type="date" value="' + esc(v.return_by || '') + '"></label>' +
+      '<fieldset class="fits"><legend>For sale / rental <span class="muted small">(to other companies or the public)</span></legend>' +
+        '<div class="grid2" style="width:100%"><div><label class="check"><input type="checkbox" id="f_for_sale"' + (v.for_sale ? ' checked' : '') + '> For sale</label><input id="f_sale_price" placeholder="Price, e.g. $40" value="' + esc(v.sale_price || '') + '" style="margin-top:6px"></div>' +
+        '<div><label class="check"><input type="checkbox" id="f_for_rent"' + (v.for_rent ? ' checked' : '') + '> For rent</label><input id="f_rent_rate" placeholder="Rate, e.g. $15 / week" value="' + esc(v.rent_rate || '') + '" style="margin-top:6px"></div></div></fieldset>' +
       bookHtml(v) +
       rolesHtml(v.roles) +
       '<details' + (v.color || v.size || v.period || v.notes || v.description || v.tags || v.value || v.condition || v.sublocation ? ' open' : '') + '><summary style="font-weight:700;margin:4px 0 12px;cursor:pointer">More details (optional)</summary>' +
@@ -874,6 +900,7 @@
     if (!nm.value.trim() || nm.dataset.auto === '1' || / — .+ book$/.test(nm.value)) { nm.value = show + ' — ' + role + ' book'; nm.dataset.auto = '1'; }
   }
   document.addEventListener('change', (e) => {
+    if (e.target.id === 'f_acquired' && $('#rbl')) $('#rbl').style.display = mustReturn({ acquired: e.target.value }) ? 'block' : 'none';
     if (e.target.id === 'bk_role' || e.target.classList.contains('r_show')) bookAutoName();
     if (e.target.id === 'f_category' && $('#bookBox')) { $('#bookBox').style.display = isBookDept({ category: e.target.value }) ? 'block' : 'none'; bookAutoName(); }
   });
@@ -907,9 +934,10 @@
   }
   function readFields(root) {
     const o = {};
+    ['for_sale', 'for_rent'].forEach((k) => { const el = $('#f_' + k, root); if (el) o[k] = el.checked; });
     if ($('.fits', root)) o.fit = $$('.f_fit', root).filter((c) => c.checked).map((c) => c.value);
     if ($('#roles', root)) { o.roles = readRoles(root); const s = o.roles.find((r) => r.show); if (s) LS.set('lastShowRole', s.show); }
-    ['name', 'category', 'qty', 'location', 'owner', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'status'].forEach((k) => {
+    ['name', 'category', 'qty', 'location', 'owner', 'acquired', 'source', 'return_by', 'sale_price', 'rent_rate', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'status'].forEach((k) => {
       const el = $('#f_' + k, root); if (el) o[k] = el.value;
     });
     return o;

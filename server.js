@@ -406,7 +406,8 @@ function log(item, by, action, detail) {
   if (item.history.length > 60) item.history.length = 60;
 }
 const FITS = ["Men's", "Women's", "Unisex", "Children's"];
-const TEXT_FIELDS = { owner: 120, name: 120, category: 60, description: 1500, color: 60, size: 60, period: 80,
+const ACQUIRED = ['Purchased', 'Donated', 'Made by us', 'Loaned to us', 'Rented', "Venue's property", 'Other'];
+const TEXT_FIELDS = { owner: 120, acquired: 30, source: 120, return_by: 20, sale_price: 20, rent_rate: 40, name: 120, category: 60, description: 1500, color: 60, size: 60, period: 80,
   tags: 200, notes: 1500, holder: 80, show: 120, due: 20, location: 12, sublocation: 80, condition: 30, status: 30 };
 function applyFields(item, b) {
   const changed = [];
@@ -415,6 +416,8 @@ function applyFields(item, b) {
     let v = s(b[k], max);
     if (k === 'status' && v && !STATUSES.includes(v)) v = 'Available';
     if (k === 'condition' && v && !CONDITIONS.includes(v)) v = '';
+    if (k === 'acquired' && v && !ACQUIRED.includes(v)) v = 'Other';
+    if (k === 'return_by' && v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) v = '';
     if (k === 'location' && v && !findLoc(v)) v = '';
     if (k === 'category') continue;
     if (k === 'name' && !v) continue;
@@ -422,6 +425,12 @@ function applyFields(item, b) {
   }
   if (Object.prototype.hasOwnProperty.call(b, 'qty')) {
     const q = num(b.qty, 0, 100000, 1); if (item.qty !== q) { item.qty = q; changed.push('qty'); }
+  }
+  // Available to the public: for sale and/or for rent (flags; price and rate are text fields).
+  for (const f of ['for_sale', 'for_rent']) {
+    if (!Object.prototype.hasOwnProperty.call(b, f)) continue;
+    const v = b[f] === true || b[f] === 'true' || b[f] === 1 || b[f] === 'on';
+    if (!!item[f] !== v) { item[f] = v; changed.push(f.replace('_', ' ')); }
   }
   // Who it fits: any of Men's / Women's / Children's (several allowed, e.g. a unisex coat).
   if (Object.prototype.hasOwnProperty.call(b, 'fit')) {
@@ -801,12 +810,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === 'GET' && p === '/api/export.csv') {
-      const cols = ['code', 'name', 'category', 'characters', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'fit', 'period', 'tags', 'value', 'owner', 'alterations', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
+      const cols = ['code', 'name', 'category', 'characters', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'fit', 'period', 'tags', 'value', 'owner', 'acquired', 'source', 'return_by', 'for_sale', 'sale_price', 'for_rent', 'rent_rate', 'alterations', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
       const q = (v) => { let t = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
       const base = baseUrl(req);
       const rows = store.items.map((i) => cols.map((c) => c === 'location_name' ? ((findLoc(i.location) || {}).name || '') :
         c === 'characters' ? (i.roles || []).map((r) => (r.show ? r.show + ': ' : '') + r.character).join('; ') :
         c === 'owner' ? (i.owner || store.settings.org || '') :
+        c === 'for_sale' || c === 'for_rent' ? (i[c] ? 'yes' : '') :
         c === 'fit' ? (i.fit || []).join('; ') :
         c === 'alterations' ? (i.alterations || []).map((a) => a.kind + (a.status === 'Undone' ? ' (undone)' : '') + ': ' + a.what + (a.show ? ' [' + a.show + ']' : '')).join('; ') :
         c === 'photos' ? i.photos.map((x) => base + '/p/' + x + '.jpg').join(' ') : i[c]).map(q).join(','));
@@ -1004,7 +1014,7 @@ const server = http.createServer(async (req, res) => {
         if (item.needs_details || item.name === 'Details needed')
           return sendJson(res, 400, { error: 'Fill in the details of ' + item.code + ' first, then copy them to the others.' });
         const now = new Date().toISOString(); const made = [];
-        const COPY = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'owner', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
+        const COPY = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'owner', 'acquired', 'source', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
         const clone = (v) => (v && typeof v === 'object') ? JSON.parse(JSON.stringify(v)) : v;
         if (Array.isArray(b.codes)) {
           const skipped = [];
