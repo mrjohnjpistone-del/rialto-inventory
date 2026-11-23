@@ -387,7 +387,7 @@ function log(item, by, action, detail) {
   item.history.unshift({ at: new Date().toISOString(), by, action, detail: detail || '' });
   if (item.history.length > 60) item.history.length = 60;
 }
-const FITS = ["Men's", "Women's", "Children's"];
+const FITS = ["Men's", "Women's", "Unisex", "Children's"];
 const TEXT_FIELDS = { name: 120, category: 60, description: 1500, color: 60, size: 60, period: 80,
   tags: 200, notes: 1500, holder: 80, show: 120, due: 20, location: 12, sublocation: 80, condition: 30, status: 30 };
 function applyFields(item, b) {
@@ -461,7 +461,7 @@ Report ONLY what you can actually see. Never guess a size, brand or number you c
  "name": short plain name someone would search for, colour + garment type, max 6 words (e.g. "Olive green Marine service coat"),
  "color": main colour,
  "size": exactly as printed on the tag (e.g. "36L", "15 1/2", "M", "12MR"), "" if not readable,
- "fit": array with any of "Men's","Women's","Children's" only if the tag says so (e.g. "Trousers, Men's") or it is unmistakable, else [],
+ "fit": array with any of "Men's","Women's","Unisex","Children's" only if the tag says so (e.g. "Trousers, Men's") or it is unmistakable, else [],
  "description": 1-2 sentences with everything readable on the tag: brand, style/model or stock number (NSN), fabric content, care, maker, plus notable features (insignia, chevrons, pockets, damage),
  "tags": comma-separated search words (garment type, uniform type, service branch, colour words),
  "period": era/style only if obvious (e.g. "Modern", "1980s military"), else "",

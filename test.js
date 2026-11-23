@@ -154,14 +154,14 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     ok(r.s === 200 && r.j.item.needs_details === true && r.j.item.name === 'Details needed' && r.j.item.category === 'Costumes', 'phone saves a blank sticker with no typing');
     r = await call('PATCH', '/api/items/COST-0040', { name: 'Navy peacoat', size: '42L' });
     ok(r.s === 200 && !r.j.item.needs_details && r.j.item.name === 'Navy peacoat', 'typing a real name on the computer clears "details needed"');
-    r = await call('PATCH', '/api/items/COST-0040', { fit: ["Women's", "Men's", 'bogus'] });
-    ok(r.s === 200 && JSON.stringify(r.j.item.fit) === JSON.stringify(["Men's", "Women's"]), "Men's/Women's/Children's ticks save, junk dropped: " + JSON.stringify(r.j.item.fit));
+    r = await call('PATCH', '/api/items/COST-0040', { fit: ["Women's", "Men's", 'Unisex', 'bogus'] });
+    ok(r.s === 200 && JSON.stringify(r.j.item.fit) === JSON.stringify(["Men's", "Women's", "Unisex"]), "Men's/Women's/Unisex ticks save, junk dropped: " + JSON.stringify(r.j.item.fit));
     // Copy details onto stickers already on the twins: a photo-only one keeps its photo, an unused one is created
     r = await call('POST', '/api/items', { code: 'COST-0041', needs_details: true });
     await call('POST', '/api/items/COST-0041/photos', { full: 'data:image/jpeg;base64,' + Buffer.from('x').toString('base64'), thumb: 'data:image/jpeg;base64,' + Buffer.from('x').toString('base64') });
     r = await call('POST', '/api/items/COST-0040/copies', { codes: ['cost41', 'COST-0042', 'COST-0040', 'PROP-0001'] });
     const c41 = r.j.items && r.j.items.find((x) => x.code === 'COST-0041'), c42 = r.j.items && r.j.items.find((x) => x.code === 'COST-0042');
-    ok(r.s === 200 && c41 && c42 && c41.name === 'Navy peacoat' && !c41.needs_details && c42.name === 'Navy peacoat' && c42.size === '42L' && r.j.items.length === 2 && r.j.skipped.some((x) => x.code === 'PROP-0001') && JSON.stringify(c42.fit) === JSON.stringify(["Men's", "Women's"]),
+    ok(r.s === 200 && c41 && c42 && c41.name === 'Navy peacoat' && !c41.needs_details && c42.name === 'Navy peacoat' && c42.size === '42L' && r.j.items.length === 2 && r.j.skipped.some((x) => x.code === 'PROP-0001') && JSON.stringify(c42.fit) === JSON.stringify(["Men's", "Women's", "Unisex"]),
       'copy onto existing stickers fills a photo-only one and creates an unused one, no new numbers: ' + JSON.stringify(r.j).slice(0, 200));
     // Alterations: temporary ones can be undone or kept; permanent ones stay; bad input refused
     r = await call('POST', '/api/items/COST-0040/alterations', { what: 'Hemmed 2 in.', kind: 'Temporary', show: 'A Few Good Men', undo_by: '2026-12-20' });

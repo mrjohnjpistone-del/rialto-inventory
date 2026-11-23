@@ -250,7 +250,7 @@
       '<select id="fs">' + opts(D.statuses, st.status, 'Any status') + '</select>' +
       '<select id="fl">' + locOpts(st.loc).replace('— No location yet —', 'Any place') + '<option value="none"' + (st.loc === 'none' ? ' selected' : '') + '>No place set</option></select>' +
       '<select id="fp">' + opts([['none', 'No photo'], ['has', 'Has photo']], st.photo, 'Photos: any') + '</select>' +
-      '<select id="ffit">' + opts(FITS.map((f) => [f, f]), st.fit, "Men's / Women's / Children's") + '</select>' +
+      '<select id="ffit">' + opts(FITS.map((f) => [f, f]), st.fit, "Men's / Women's / Unisex / Children's") + '</select>' +
       '<select id="falt">' + opts([['undo', 'Temporary — to undo'], ['any', 'Any alteration'], ['perm', 'Permanently altered']], st.alt, 'Alterations: any') + '</select>' +
       '<select id="fdt">' + opts([['need', 'Needs details']], st.details, 'Details: any') + '</select>' +
       '<select id="fo">' + opts([['name', 'A → Z'], ['new', 'Newest'], ['updated', 'Recently changed'], ['code', 'Sticker code']], st.sort) + '</select>' +
@@ -645,7 +645,7 @@
   }
 
   // ── Add / edit ─────────────────────────────────────────────────────────────
-  const FITS = ["Men's", "Women's", "Children's"];
+  const FITS = ["Men's", "Women's", "Unisex", "Children's"];
   function fieldsHtml(v) {
     const sticky = LS.get('sticky', {});
     v = Object.assign({ category: sticky.category || '', location: sticky.location || '', roles: sticky.roles || [], qty: 1, condition: '' }, v || {});
