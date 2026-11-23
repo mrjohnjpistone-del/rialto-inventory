@@ -192,6 +192,18 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     r = await call('POST', '/api/items', { code: 'ACC-0070', needs_details: true, location: bin });
     ok(r.s === 200 && bin && r.j.item.location === bin && r.j.item.needs_details, 'blank sticker put into a bin lands in that bin: ' + JSON.stringify({ bin, loc: r.j.item && r.j.item.location }));
     await call('DELETE', '/api/items/ACC-0070');
+    // A bin sits inside a place; no loops; can't delete a shelf that still holds bins
+    r = await call('POST', '/api/locations', { name: 'Loft shelf 2', area: 'Costume loft' }); const shelf = r.j.loc.code;
+    r = await call('PATCH', '/api/locations/' + bin, { parent: shelf });
+    ok(r.s === 200 && r.j.loc.parent === shelf, 'bin placed on a shelf');
+    r = await call('PATCH', '/api/locations/' + shelf, { parent: bin });
+    ok(r.s === 400 && /inside/.test(r.j.error), 'a shelf cannot be put inside its own bin (no loops)');
+    r = await call('PATCH', '/api/locations/' + bin, { parent: bin });
+    ok(r.s === 400, 'a bin cannot be inside itself');
+    r = await call('DELETE', '/api/locations/' + shelf);
+    ok(r.s === 409 || r.s === 403, 'a shelf that still holds a bin is not deleted');
+    r = await call('POST', '/api/locations', { name: 'Bin 9', parent: shelf });
+    ok(r.s === 200 && r.j.loc.parent === shelf, 'a new bin can be created already on its shelf');
 
     // Prompt books always belong to a show
     r = await call('POST', '/api/items', { code: 'BOOK-0001', name: 'SM prompt book' });

@@ -199,6 +199,7 @@ def main():
     ap.add_argument('--layout', choices=list(LAYOUTS), default=None)
     ap.add_argument('--out', default=None)
     ap.add_argument('--no-fill', action='store_true', help='allow a partial last sheet (normally filled with blanks)')
+    ap.add_argument('--copies', type=int, default=None, help='stickers per code (place/bin stickers default to 2: lid + side)')
     a = ap.parse_args()
 
     if a.demo:
@@ -230,6 +231,8 @@ def main():
             codes = sorted(l['code'] for l in D['locations'])
     if not codes:
         sys.exit('Nothing to print for that choice.')
+    copies = a.copies or (2 if all(c.startswith('LOC-') for c in codes) else 1)
+    codes = [c for c in codes for _ in range(copies)]
     depts = {d['p']: d for d in D['settings']['departments']}
     org = D['settings'].get('org', '')
     by_code = {i['code']: i for i in D['items']}; locs = {l['code']: l for l in D.get('locations', [])}

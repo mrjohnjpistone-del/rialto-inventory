@@ -75,6 +75,9 @@
   }
   const loc = (c) => D.locations.find((x) => x.code === c);
   const locName = (c) => (loc(c) || {}).name || '';
+  // "Bin 1 · in Costume loft – Shelf 2": where a place (bin) itself is.
+  const locPath = (c) => { const l = loc(c); if (!l) return ''; const par = l.parent && loc(l.parent); return l.name + (par ? ' · in ' + par.name : ''); };
+  const inPlace = (c, target) => { for (let l = loc(c), n = 0; l && n < 50; l = l.parent ? loc(l.parent) : null, n++) if (l.code === target) return true; return false; };
 
   // ── Live updates ───────────────────────────────────────────────────────────
   function live() {
@@ -127,7 +130,7 @@
   const thumb = (it) => it.photos && it.photos[0] ? '<div class="th" style="background-image:url(/p/' + it.photos[0] + '_t.jpg)"></div>' : '<div class="th">▢</div>';
   function rowHtml(it, extra) {
     const where = locName(it.location);
-    const meta = [it.code, where, it.holder ? 'with ' + it.holder : '', it.qty > 1 ? '×' + it.qty : ''].filter(Boolean).join(' · ');
+    const meta = [it.code, it.location ? locPath(it.location) : where, it.holder ? 'with ' + it.holder : '', it.qty > 1 ? '×' + it.qty : ''].filter(Boolean).join(' · ');
     return '<a class="it" href="/i/' + esc(it.code) + '" data-nav>' + thumb(it) + '<div class="bd"><div class="nm">' + chip(it.code) + ' ' + esc(it.name) + '</div><div class="mt">' + esc(meta) + (it.size ? ' · ' + esc(it.size) : '') + '</div>' +
       (activeTemp(it).length ? '<div class="mt" style="color:var(--warn);font-weight:700">✂ temporary alteration to undo</div>' : '') +
       (extra || '') + '</div>' + pill(it.status) + '</a>';
@@ -269,7 +272,7 @@
       let r = D.items.filter((i) => {
         if (st.cat && i.category !== st.cat) return false;
         if (st.status && i.status !== st.status) return false;
-        if (st.loc === 'none' ? i.location : st.loc && i.location !== st.loc) return false;
+        if (st.loc === 'none' ? i.location : st.loc && !inPlace(i.location, st.loc)) return false;
         if (st.photo === 'none' && i.photos.length) return false;
         if (st.photo === 'has' && !i.photos.length) return false;
         if (st.details === 'need' && !i.needs_details) return false;
@@ -368,7 +371,7 @@
       ((it.status === 'Checked out' || it.status === 'In a show') ? '<button class="btn ok" id="ci">Check in / returned</button>' : '<button class="btn" id="co">Check out</button>') +
       '<button class="btn blue" id="mv">Move it</button></div>' +
       '<div class="card"><dl class="facts">' +
-      '<dt>Place</dt><dd>' + (where ? '<a href="/l/' + esc(where.code) + '" data-nav>' + esc(where.name) + '</a>' : '<span class="muted">Not set</span>') + (it.sublocation ? ' · ' + esc(it.sublocation) : '') + '</dd>' +
+      '<dt>Place</dt><dd>' + (where ? '<a href="/l/' + esc(where.code) + '" data-nav>' + esc(where.name) + '</a>' + (where.parent && loc(where.parent) ? ' <span class="muted">· in</span> <a href="/l/' + esc(where.parent) + '" data-nav>' + esc(loc(where.parent).name) + '</a>' : '') : '<span class="muted">Not set</span>') + (it.sublocation ? ' · ' + esc(it.sublocation) : '') + '</dd>' +
       '<dt>Department</dt><dd>' + esc(it.category) + (deptOf(it.code) && deptOf(it.code).room ? ' <span class="muted">· ' + esc(deptOf(it.code).room) + '</span>' : '') + '</dd>' +
       (it.condition ? '<dt>Condition</dt><dd>' + esc(it.condition) + '</dd>' : '') +
       (it.color ? '<dt>Color</dt><dd>' + esc(it.color) + '</dd>' : '') +
@@ -1028,15 +1031,16 @@
       '<form class="card" id="lf"><h3>Add a place</h3><label>Name<input id="ln" required placeholder="e.g. Costume loft – Rack 3"></label>' +
       '<label>Area / room (groups places together)<input id="la" list="al" placeholder="e.g. Costume loft"></label><datalist id="al">' +
       [...new Set(D.locations.map((l) => l.area).filter(Boolean))].map((a) => '<option value="' + esc(a) + '">').join('') + '</datalist>' +
+      '<label>Inside which place? <span class="muted small">(for a bin: the shelf or room it sits in)</span><select id="lp">' + locOpts('').replace('— No location yet —', '— Not inside another place —') + '</select></label>' +
       '<button class="btn big">Add place</button></form>' +
       (ls.length ? '<div class="row" style="margin-bottom:10px"><button class="btn alt" id="plAll">Print all place stickers</button></div>' : '') +
       '<div class="list">' + ls.map((l) => {
         const head = (l.area || 'Other places') !== lastArea ? '<h3 style="margin:12px 2px 2px">' + esc(lastArea = (l.area || 'Other places')) + '</h3>' : '';
-        return head + '<a class="it" href="/l/' + esc(l.code) + '" data-nav><div class="th">▦</div><div class="bd"><div class="nm">' + esc(l.name) + '</div><div class="mt">' + esc(l.code) + ' · ' + count(l.code) + ' items</div></div></a>';
+        return head + '<a class="it" href="/l/' + esc(l.code) + '" data-nav><div class="th">▦</div><div class="bd"><div class="nm">' + esc(l.name) + '</div><div class="mt">' + esc(l.code) + ' · ' + count(l.code) + ' items' + (l.parent && loc(l.parent) ? ' · in ' + esc(loc(l.parent).name) : '') + '</div></div></a>';
       }).join('') + '</div>' + (ls.length ? '' : '<div class="card empty">No places yet. Start with the big ones: each room, then each rack or shelf unit.</div>');
     $('#lf').onsubmit = async (e) => {
       e.preventDefault();
-      try { const r = await api('POST', '/api/locations', { name: $('#ln').value, area: $('#la').value }); D.locations.push(r.loc); toast('Added ' + r.loc.name, 'good'); LS.set('lastArea', $('#la').value); render(); }
+      try { const r = await api('POST', '/api/locations', { name: $('#ln').value, area: $('#la').value, parent: $('#lp').value }); D.locations.push(r.loc); toast('Added ' + r.loc.name, 'good'); LS.set('lastArea', $('#la').value); render(); }
       catch (er) { toast(er.message, 'bad'); }
     };
     const la = $('#la'); if (la) la.value = LS.get('lastArea', '');
@@ -1046,15 +1050,30 @@
     const l = loc(code);
     if (!l) { view.innerHTML = '<div class="card"><h1>Unknown place sticker ' + esc(code) + '</h1><p>It may have been removed. <a href="/locations" data-nav>See all places</a></p></div>'; return; }
     const here = D.items.filter((i) => i.location === code).sort((a, b) => a.name.localeCompare(b.name));
+    const kids = D.locations.filter((x) => x.parent === code).sort((a, b) => a.name.localeCompare(b.name));
     view.innerHTML = '<span class="code muted">' + esc(l.code) + '</span><h1>' + esc(l.name) + '</h1>' + (l.area ? '<p class="muted">' + esc(l.area) + '</p>' : '') +
       '<div class="row" style="margin-bottom:14px"><a class="btn" href="/audit/' + esc(code) + '" data-nav>Audit this place</a><button class="btn blue" id="put">Put items here</button></div>' +
       '<p class="muted small" style="margin:-6px 0 12px"><b>Put items here</b>: scan each item\'s sticker as it goes in, blank stickers too. Taking something out? Scan it into its new place, or use <b>Move it</b> on the item.</p>' +
       '<div class="row" style="margin-bottom:14px"><a class="btn alt" href="/add" id="addHere">Add new item here</a><button class="btn alt" id="pl">Print sticker</button><button class="btn alt" onclick="window.print()">Print contents list</button><button class="btn alt" id="rn">Rename</button></div>' +
+      '<div class="card" style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap"><div><span class="muted small">WHERE ' + (/bin/i.test(l.name) ? 'THIS BIN' : 'THIS') + ' IS</span><br>' +
+        (l.parent && loc(l.parent) ? '<a href="/l/' + esc(l.parent) + '" data-nav><b>' + esc(locPath(l.parent)) + '</b></a>' : '<b class="audit-miss">Not set yet</b>') + '</div>' +
+        '<button class="btn sm" id="mvBin">' + (l.parent ? 'Move it' : 'Set where it is') + '</button></div>' +
+      (kids.length ? '<div class="sect"><h2>' + kids.length + ' bin' + (kids.length === 1 ? '' : 's') + ' / places inside</h2></div><div class="list">' +
+        kids.map((k) => '<a class="it" href="/l/' + esc(k.code) + '" data-nav><div class="th">▦</div><div class="bd"><div class="nm">' + esc(k.name) + '</div><div class="mt">' + esc(k.code) + ' · ' +
+          D.items.filter((i) => i.location === k.code).length + ' items</div></div></a>').join('') + '</div>' : '') +
       '<div class="sect"><h2>' + here.length + ' item' + (here.length === 1 ? '' : 's') + ' here</h2></div>' +
       '<div class="list">' + here.map((i) => rowHtml(i)).join('') + '</div>' + (here.length ? '' : '<div class="card empty">Nothing recorded here yet.</div>') +
       (D.role === 'admin' && !here.length ? '<button class="btn alt sm" id="dl" style="margin-top:16px;color:var(--bad)">Delete this place</button>' : '');
     $('#addHere').onclick = (e) => { e.preventDefault(); const st = LS.get('sticky', {}); st.location = code; LS.set('sticky', st); go('/add'); };
     $('#pl').onclick = () => printCodes([code], 'locations');
+    $('#mvBin').onclick = () => modal('<h2>Where is ' + esc(l.name) + '?</h2><p class="muted small">Pick the shelf, rack or room it sits in, or scan that place\'s sticker.</p>' +
+      '<label>Place<select id="bp">' + opts(D.locations.filter((x) => x.code !== code && !inPlace(x.code, code)).sort((a, b) => a.name.localeCompare(b.name)).map((x) => [x.code, locPath(x.code)]), l.parent || '', '— Not inside another place —') + '</select></label>' +
+      '<button class="btn big" id="bpOk">Save</button><button class="btn alt big" id="bpScan" style="margin-top:8px">⌗ Scan the shelf / room sticker</button><button class="btn alt big" data-close style="margin-top:8px">Cancel</button>',
+    (m, close) => {
+      const save = async (parent) => { try { const r = await api('PATCH', '/api/locations/' + code, { parent }); Object.assign(l, r.loc); close(); render(true); toast(parent ? l.name + ' is now in ' + locName(parent) : 'Saved', 'good'); } catch (er) { toast(er.message, 'bad'); } };
+      $('#bpOk', m).onclick = () => save($('#bp', m).value);
+      $('#bpScan', m).onclick = () => { close(); openScanner({ mode: 'pickLoc', prompt: 'Scan the sticker of the shelf / room ' + l.name + ' sits in', onLoc: (x) => (x.code === code ? toast('That is this bin\'s own sticker', 'bad') : save(x.code)) }); };
+    });
     $('#put').onclick = () => openScanner({ mode: 'put', loc: l, prompt: 'Scan each item you are putting in ' + l.name, onClose: () => render(true) });
     $('#rn').onclick = async () => {
       const n = prompt('New name for this place', l.name); if (!n) return;
@@ -1219,6 +1238,7 @@
   function printer() { return LS.get('printer', 'pixcut'); }
   const perSheet = (layout) => { const L = PIX_LAYOUTS[layout] || PIX_LAYOUTS.std; return L.cols * L.rows; };
   async function printCodes(codes, kind) {
+    if (codes.length && codes.every(isLocCode)) codes = codes.flatMap((c) => [c, c]);   // two per bin: top + side
     if (printer() === 'pixcut') {
       const layout = kind === 'locations' || codes.every(isLocCode) ? 'big' : LS.get('pixLayout', 'std');
       const spare = (perSheet(layout) - codes.length % perSheet(layout)) % perSheet(layout);

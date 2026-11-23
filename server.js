@@ -362,6 +362,14 @@ setInterval(() => { for (const ip of [...loginFails.keys()]) loginBlocked(ip); }
 function findItem(code) { return store.items.find((i) => i.code === code || (i.aliases && i.aliases.includes(code))); }
 function codeTaken(code) { return !!findItem(code) || store.removed.some((i) => i.code === code); }
 function prefixOf(code) { return String(code).split('-')[0]; }
+// A place inside a place: the parent must exist, not be itself, and not sit inside it (no loops).
+function parentError(loc, code) {
+  const par = findLoc(String(code || '').toUpperCase());
+  if (!par) return 'No such place ' + code + '.';
+  if (par.code === loc.code) return 'A place cannot be inside itself.';
+  for (let p = par, n = 0; p && n < 50; p = p.parent ? findLoc(p.parent) : null, n++) if (p.code === loc.code) return par.name + ' is inside ' + loc.name + ' already.';
+  return '';
+}
 function bookNeedsShow(prefix, roles) { return prefix === 'BOOK' && !(Array.isArray(roles) && roles.some((r) => r && String(r.show || '').trim())); }
 function deptByPrefix(p) { return store.settings.departments.find((d) => d.p === p); }
 function deptByName(n) { n = String(n || '').toLowerCase(); return store.settings.departments.find((d) => d.name.toLowerCase() === n || d.p.toLowerCase() === n); }
@@ -1067,7 +1075,8 @@ const server = http.createServer(async (req, res) => {
       if (store.locations.find((l) => l.name.toLowerCase() === name.toLowerCase())) return sendJson(res, 409, { error: 'There is already a location called ' + name + '.' });
       let n = store.settings.next_loc; while (findLoc(LOC_PREFIX + '-' + pad(n, 4))) n++;
       store.settings.next_loc = n + 1;
-      const loc = { code: LOC_PREFIX + '-' + pad(n, 4), name, area: s(b.area, 80), notes: s(b.notes, 400), created_at: new Date().toISOString(), created_by: by };
+      const loc = { code: LOC_PREFIX + '-' + pad(n, 4), name, area: s(b.area, 80), notes: s(b.notes, 400), parent: '', created_at: new Date().toISOString(), created_by: by };
+      if (b.parent) { const pe = parentError(loc, b.parent); if (pe) return sendJson(res, 400, { error: pe }); loc.parent = findLoc(String(b.parent).toUpperCase()).code; }
       store.locations.push(loc); save(); broadcast({ t: 'loc', loc });
       return sendJson(res, 200, { ok: true, loc });
     }
@@ -1079,11 +1088,16 @@ const server = http.createServer(async (req, res) => {
         if (b.name != null && s(b.name, 80)) loc.name = s(b.name, 80);
         if (b.area != null) loc.area = s(b.area, 80);
         if (b.notes != null) loc.notes = s(b.notes, 400);
+        if (b.parent != null) {
+          if (!b.parent) loc.parent = '';
+          else { const pe = parentError(loc, b.parent); if (pe) return sendJson(res, 400, { error: pe }); loc.parent = findLoc(String(b.parent).toUpperCase()).code; }
+        }
         save(); broadcast({ t: 'loc', loc }); return sendJson(res, 200, { ok: true, loc });
       }
       if (method === 'DELETE') {
         if (!isAdmin) return sendJson(res, 403, { error: 'Needs the admin code.' });
         if (store.items.some((i) => i.location === loc.code)) return sendJson(res, 409, { error: 'Move the items out of ' + loc.name + ' first.' });
+        if (store.locations.some((l) => l.parent === loc.code)) return sendJson(res, 409, { error: 'Move the bins out of ' + loc.name + ' first.' });
         store.locations = store.locations.filter((l) => l !== loc); save(); broadcast({ t: 'reload' });
         return sendJson(res, 200, { ok: true });
       }
