@@ -730,12 +730,53 @@
   function copyToSticker(it) {
     openScanner({ mode: 'copy', from: it, prompt: 'Scan the BLANK sticker on the next one' });
   }
+  // Most of the time the twins already wear a printed sticker (often with a phone photo and "Details needed").
+  // So the dialog leads with "copy onto stickers we already have"; new sticker numbers are the second choice.
+  function parseCodeList(txt) {
+    const out = [];
+    String(txt || '').replace(/\s+(to|thru|through)\s+/gi, '-').split(/[\s,;]+/).filter(Boolean).forEach((tok) => {
+      const m = tok.match(/^([a-z]+)-?0*(\d+)-(?:[a-z]+-?)?0*(\d+)$/i);
+      if (m) { const a = +m[2], b = +m[3]; for (let k = Math.min(a, b); k <= Math.max(a, b) && out.length < 100; k++) out.push(normCode(m[1] + k)); }
+      else { const c = normCode(tok); if (c) out.push(c); }
+    });
+    return [...new Set(out.filter(Boolean))];
+  }
   function makeCopies(it) {
-    modal('<h2>Make copies of ' + esc(it.name) + '</h2><p class="muted">Each copy becomes its own item with its own sticker number and QR code. You print the stickers next, stick each one on, and scan it to add that one\'s photo.</p>' +
+    const pend = D.items.filter((i) => i.needs_details && i.code !== it.code && i.category === it.category)
+      .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+    modal('<h2>Copy the details of ' + esc(it.name) + '</h2>' +
+      '<form id="ce"><h3 style="margin:4px 0 6px">Onto stickers you already have</h3>' +
+      '<p class="muted small" style="margin-top:0">No printing. Each keeps its own sticker and its own photo.</p>' +
+      (pend.length ? '<p class="small" style="margin:6px 0"><b>Waiting for details</b> (photo taken on the phone) — tick the ones that are the same:</p>' +
+        '<div style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:6px 8px;margin-bottom:10px">' +
+        pend.map((p) => '<label class="check" style="margin:6px 0;font-weight:500"><input type="checkbox" class="pc" value="' + esc(p.code) + '">' +
+          (p.photos[0] ? '<img src="/p/' + p.photos[0] + '_t.jpg" style="width:56px;height:56px;object-fit:cover;border-radius:8px">' : '') +
+          '<span class="code">' + esc(p.code) + '</span></label>').join('') + '</div>' : '') +
+      '<label>' + (pend.length ? 'Or type' : 'Type') + ' the sticker numbers<input id="ct" placeholder="e.g. cost45, cost46  or  cost45-50" autocapitalize="characters"></label>' +
+      '<button class="btn big">Copy details onto these</button></form>' +
+      '<hr style="border:0;border-top:1px solid var(--line);margin:18px 0">' +
+      '<details><summary style="font-weight:700;cursor:pointer">No stickers on them yet? Make new sticker numbers</summary><div style="margin-top:10px">' +
+      '<p class="muted">Each copy becomes its own item with its own sticker number and QR code. You print the stickers next, stick each one on, and scan it to add that one\'s photo.</p>' +
       '<form id="mc"><label>How many more?<input id="mn" type="number" min="1" max="100" value="1" inputmode="numeric"></label>' +
       (it.photos.length ? '<label class="check"><input type="checkbox" id="mp" checked> Show this photo on the copies until each gets its own</label>' : '') +
-      '<button class="btn big">Make copies</button><button type="button" class="btn alt big" data-close style="margin-top:8px">Cancel</button></form>',
+      '<button class="btn alt big">Make copies with new stickers</button></form></div></details>' +
+      '<button type="button" class="btn alt big" data-close style="margin-top:12px">Cancel</button>',
     (m, close) => {
+      $('#ce', m).onsubmit = async (e) => {
+        e.preventDefault();
+        const codes = [...new Set($$('.pc', m).filter((c) => c.checked).map((c) => c.value).concat(parseCodeList($('#ct', m).value)))];
+        if (!codes.length) return toast('Tick or type at least one sticker number.', 'bad');
+        try {
+          const r = await api('POST', '/api/items/' + it.code + '/copies', { codes });
+          r.items.forEach(upsert); close();
+          modal('<h2>Copied onto ' + r.items.length + ' item' + (r.items.length === 1 ? '' : 's') + ' ✓</h2>' +
+            '<p>' + r.items.map((x) => '<a class="code" href="/i/' + esc(x.code) + '" data-nav>' + esc(x.code) + '</a>').join(' ') + '</p>' +
+            (r.skipped && r.skipped.length ? '<p class="audit-miss small">Skipped: ' + r.skipped.map((x) => esc(x.code + ' (' + x.why + ')')).join(', ') + '</p>' : '') +
+            '<p class="muted small">Nothing to print — they already have their stickers. Change size or color on any one that differs.</p>' +
+            '<button class="btn big" data-close>Done</button>', () => {});
+          render(true);
+        } catch (er) { toast(er.message, 'bad'); }
+      };
       $('#mc', m).onsubmit = async (e) => {
         e.preventDefault(); const n = Number($('#mn', m).value) || 0; if (n < 1) return;
         if (!confirm('Create ' + n + ' new item' + (n === 1 ? '' : 's') + ', each with its own sticker number?')) return;
@@ -939,6 +980,12 @@
       if (o.mode === 'copy') {
         if (r.kind === 'loc') { msg.textContent = 'That is a place sticker. Scan a blank item sticker.'; return; }
         const used = item(r.code);
+        if (used && used.needs_details) {
+          try { const x = await api('POST', '/api/items/' + o.from.code + '/copies', { codes: [r.code] }); x.items.forEach(upsert);
+            add('✓ ' + esc(r.code) + ' now ' + esc(o.from.name), 'ok'); msg.textContent = 'Done. Scan the next one, or tap Done.'; }
+          catch (er) { msg.textContent = er.message; }
+          return;
+        }
         if (used) { msg.textContent = r.code + ' is already on "' + used.name + '". Scan a BLANK sticker.'; return; }
         closeScanner(); go('/i/' + r.code + '?copy=' + o.from.code); return;
       }

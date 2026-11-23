@@ -156,6 +156,16 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     ok(r.s === 200 && !r.j.item.needs_details && r.j.item.name === 'Navy peacoat', 'typing a real name on the computer clears "details needed"');
     r = await call('PATCH', '/api/items/COST-0040', { fit: ["Women's", "Men's", 'bogus'] });
     ok(r.s === 200 && JSON.stringify(r.j.item.fit) === JSON.stringify(["Men's", "Women's"]), "Men's/Women's/Children's ticks save, junk dropped: " + JSON.stringify(r.j.item.fit));
+    // Copy details onto stickers already on the twins: a photo-only one keeps its photo, an unused one is created
+    r = await call('POST', '/api/items', { code: 'COST-0041', needs_details: true });
+    await call('POST', '/api/items/COST-0041/photos', { full: 'data:image/jpeg;base64,' + Buffer.from('x').toString('base64'), thumb: 'data:image/jpeg;base64,' + Buffer.from('x').toString('base64') });
+    r = await call('POST', '/api/items/COST-0040/copies', { codes: ['cost41', 'COST-0042', 'COST-0040', 'PROP-0001'] });
+    const c41 = r.j.items && r.j.items.find((x) => x.code === 'COST-0041'), c42 = r.j.items && r.j.items.find((x) => x.code === 'COST-0042');
+    ok(r.s === 200 && c41 && c42 && c41.name === 'Navy peacoat' && !c41.needs_details && c42.name === 'Navy peacoat' && c42.size === '42L' && r.j.items.length === 2 && r.j.skipped.some((x) => x.code === 'PROP-0001') && JSON.stringify(c42.fit) === JSON.stringify(["Men's", "Women's"]),
+      'copy onto existing stickers fills a photo-only one and creates an unused one, no new numbers: ' + JSON.stringify(r.j).slice(0, 200));
+    r = await call('POST', '/api/items/COST-0040/copies', { codes: ['COST-0042'] });
+    ok(r.s === 400 && /already has details/.test(r.j.error), 'never overwrites an item that already has details');
+    await call('DELETE', '/api/items/COST-0041'); await call('DELETE', '/api/items/COST-0042');
     r = await call('PATCH', '/api/items/COST-0040', { fit: [] });
     ok(r.s === 200 && r.j.item.fit.length === 0, 'unticking all clears who-it-fits');
     await call('DELETE', '/api/items/COST-0040');
@@ -214,7 +224,7 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     aud = start(AUD, { PORT: AUD_PORT, DATA_DIR: audDir, BLOB_KEY: BLOB, STAFF_KEY: 'x', WARM_URLS: '' });
     await up('http://localhost:' + AUD_PORT + '/health');
     for (let i = 0; i < 40 && r.s === 503; i++) { await wait(1000); r = await call('GET', '/api/data'); }
-    ok(r.s === 200 && r.j.items.length === 46 && !r.j.items.some((i) => i.name === 'Should not land'), 'full inventory restored after mirror came back: ' + (r.j && r.j.items.length));
+    ok(r.s === 200 && r.j.items.length === 46 && !r.j.items.some((i) => i.name === 'Should not land'), 'full inventory restored after mirror came back: ' + (r.j && r.j.items.length) + ' ' + (r.j && r.j.items.map((i) => i.code).filter((c) => /COST-004/.test(c)).join(' ')));
 
     // Brand-new install with no backup configured: admin sign-in form must work (regression: no secret → 500)
     const solo = start(__dirname, { PORT: 3913, DATA_DIR: path.join(tmp, 'solo'), CREW_KEY: 'CREW-SOLO', ADMIN_KEY: 'ADMIN-SOLOKEY' });

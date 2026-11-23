@@ -819,15 +819,43 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, item: itemOut(item) });
       }
       if (method === 'POST' && sub === '/copies') {
-        // N new items like this one, each with its own next sticker number (and so its own QR).
-        const b = await readBody(req); const n = num(b.count, 1, 100, 0);
-        if (!n) return sendJson(res, 400, { error: 'How many copies?' });
+        // Copy this item's details onto other stickers.
+        //  codes: [...]  stickers already printed and stuck on: a photo-only "Details needed" item gets the
+        //                details (keeping its own photos); an unused sticker becomes a new item. Nothing to print.
+        //  count: N      N brand-new items on the next sticker numbers (they need stickers printed).
+        const b = await readBody(req);
         const now = new Date().toISOString(); const made = [];
-        const COPY = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'period', 'condition', 'tags', 'description', 'notes', 'value'];
+        const COPY = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
+        const clone = (v) => (v && typeof v === 'object') ? JSON.parse(JSON.stringify(v)) : v;
+        if (Array.isArray(b.codes)) {
+          const skipped = [];
+          const codes = [...new Set(b.codes.slice(0, 100).map((c) => normCode(c)).filter(Boolean))];
+          for (const code of codes) {
+            if (code === item.code) continue;
+            const dept = CODE_RE.test(code) && deptByPrefix(prefixOf(code));
+            if (!dept) { skipped.push({ code, why: 'not a sticker code' }); continue; }
+            if (dept.p !== prefixOf(item.code)) { skipped.push({ code, why: 'is a ' + dept.p + ' sticker, not ' + prefixOf(item.code) }); continue; }
+            const ex = findItem(code);
+            if (ex && !ex.needs_details) { skipped.push({ code, why: 'already has details: ' + ex.name }); continue; }
+            if (!ex && codeTaken(code)) { skipped.push({ code, why: 'was removed from inventory' }); continue; }
+            const c = ex || { code, aliases: [], status: 'Available', holder: '', show: '', due: '', photos: [], history: [],
+              created_at: now, created_by: by, last_seen: now };
+            COPY.forEach((f) => { c[f] = item[f] == null ? '' : clone(item[f]); });
+            c.category = dept.name; delete c.needs_details; c.updated_at = now; c.updated_by = by;
+            log(c, by, ex ? 'Details added' : 'Added', 'copied from ' + item.code);
+            if (!ex) { bumpPastCode(code); store.items.push(c); }
+            made.push(c);
+          }
+          if (!made.length) return sendJson(res, 400, { error: skipped.length ? skipped.map((x) => x.code + ' ' + x.why).join('; ') : 'Type at least one sticker number.' });
+          syncRoster(item.roles); save(); made.forEach((c) => broadcast({ t: 'item', item: itemOut(c) }));
+          return sendJson(res, 200, { ok: true, items: made.map(itemOut), skipped, existing: true });
+        }
+        const n = num(b.count, 1, 100, 0);
+        if (!n) return sendJson(res, 400, { error: 'How many copies?' });
         for (let k = 0; k < n; k++) {
           const c = { code: nextCode(prefixOf(item.code)), aliases: [], status: 'Available', holder: '', show: '', due: '', photos: b.photo ? item.photos.slice(0, 1) : [],
             history: [], created_at: now, created_by: by, updated_at: now, updated_by: by, last_seen: '' };
-          COPY.forEach((f) => { c[f] = item[f] == null ? '' : item[f]; });
+          COPY.forEach((f) => { c[f] = item[f] == null ? '' : clone(item[f]); });
           log(c, by, 'Added', 'copied from ' + item.code);
           store.items.push(c); made.push(c);
         }
