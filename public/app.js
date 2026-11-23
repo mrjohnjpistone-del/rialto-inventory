@@ -128,6 +128,29 @@
   const pillCls = (st) => (st || 'Available').split(' ')[0];
   const pill = (st) => '<span class="pill ' + pillCls(st) + '">' + esc(st || 'Available') + '</span>';
   const thumb = (it) => it.photos && it.photos[0] ? '<div class="th" style="background-image:url(/p/' + it.photos[0] + '_t.jpg)"></div>' : '<div class="th">▢</div>';
+  // ── Tick boxes beside items: select several, then Move / Print without opening each one ──
+  const SEL = new Set(); let selPage = '';
+  const selRow = (it, extra) => '<div class="srow"><label class="sbox" title="Select"><input type="checkbox" class="sel" value="' + esc(it.code) + '"' + (SEL.has(it.code) ? ' checked' : '') + '></label>' + rowHtml(it, extra) + '</div>';
+  function selBar() {
+    let bar = document.getElementById('selbar');
+    if (!SEL.size || !$$('.sel').length) { if (bar) bar.remove(); return; }
+    if (!bar) { bar = document.createElement('div'); bar.id = 'selbar'; document.body.appendChild(bar); }
+    bar.innerHTML = '<b>' + SEL.size + ' selected</b><button class="btn sm" data-sa="move">Move to…</button><button class="btn alt sm" data-sa="print">Print stickers</button>' +
+      '<button class="btn alt sm" data-sa="all">Select all shown</button><button class="btn alt sm" data-sa="clear">Clear</button>';
+  }
+  document.addEventListener('change', (e) => {
+    if (!e.target.classList || !e.target.classList.contains('sel')) return;
+    e.target.checked ? SEL.add(e.target.value) : SEL.delete(e.target.value); selBar();
+  });
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('[data-sa]'); if (!b) return;
+    const a = b.dataset.sa, codes = [...SEL];
+    if (a === 'clear') { SEL.clear(); $$('.sel').forEach((c) => { c.checked = false; }); selBar(); }
+    else if (a === 'all') { $$('.sel').forEach((c) => { c.checked = true; SEL.add(c.value); }); selBar(); }
+    else if (a === 'print') printCodes(codes.slice().sort((x, y) => x.localeCompare(y, undefined, { numeric: true })));
+    else if (a === 'move') pickPlace('Move these ' + codes.length + ' item' + (codes.length === 1 ? '' : 's') + ' into…', async (dest) => {
+      try { await moveMany(codes, dest); SEL.clear(); render(true); selBar(); } catch (er) { toast(er.message, 'bad'); } });
+  });
   function rowHtml(it, extra) {
     const where = locName(it.location);
     const meta = [it.code, it.location ? locPath(it.location) : where, it.holder ? 'with ' + it.holder : '', it.qty > 1 ? '×' + it.qty : ''].filter(Boolean).join(' · ');
@@ -175,6 +198,8 @@
     if (soft && pinned) return;
     pinned = false;
     const p = location.pathname.replace(/\/+$/, '') || '/';
+    if (p + location.search !== selPage) { SEL.clear(); selPage = p + location.search; }
+    setTimeout(selBar, 0);
     route = p;
     const tab = p === '/' ? 'home' : p.split('/')[1].toLowerCase();
     $$('#tabbar a').forEach((a) => a.classList.toggle('on', a.dataset.tab === tab || (tab === 'i' && a.dataset.tab === 'browse') || (tab === 'l' && a.dataset.tab === 'locations') || ((tab === 'show' || tab === 'set') && a.dataset.tab === 'characters')));
@@ -296,7 +321,7 @@
       const sm = showMatches(st.q);
       $('#showHit').innerHTML = sm.map((s) => '<a class="banner" style="display:block;text-decoration:none" href="' + showHref(s) + '" data-nav>🎭 <b>' + esc(s) + '</b> — see every character and item in this show →</a>').join('');
       $('#cnt').textContent = r.length + ' of ' + D.items.length + ' items' + (r.length ? ' · ' + r.reduce((a, i) => a + (i.qty || 1), 0) + ' pieces' : '');
-      $('#res').innerHTML = r.slice(0, 400).map((i) => rowHtml(i)).join('') + (r.length > 400 ? '<p class="muted">Showing the first 400 — search to narrow it down.</p>' : '') +
+      $('#res').innerHTML = r.slice(0, 400).map((i) => selRow(i)).join('') + (r.length > 400 ? '<p class="muted">Showing the first 400 — search to narrow it down.</p>' : '') +
         (r.length ? '' : '<div class="card empty">No matches.</div>');
     }
     draw();
@@ -1032,7 +1057,7 @@
       '<div class="sect"><h2>Characters</h2></div><div class="list">' + [...chars.values()].sort((a, b) => a.character.localeCompare(b.character)).map((r) =>
         '<a class="it" href="' + setHref(r) + '" data-nav><div class="th">☺</div><div class="bd"><div class="nm">' + esc(r.character) + '</div><div class="mt">' + r.n + ' item' + (r.n === 1 ? '' : 's') + '</div></div></a>').join('') + '</div>' +
       (chars.size ? '' : '<div class="card empty">No characters tagged for this show yet.</div>') +
-      Object.keys(byDept).sort((a, b) => (/prompt book/i.test(b) ? 1 : 0) - (/prompt book/i.test(a) ? 1 : 0) || a.localeCompare(b)).map((d) => '<div class="sect"><h2>' + esc(d) + '</h2></div><div class="list">' + byDept[d].sort((a, b) => a.name.localeCompare(b.name)).map((i) => rowHtml(i, '<div class="mt">' + esc(who(i)) + ' · ' + esc(locName(i.location) || 'No place set') + '</div>')).join('') + '</div>').join('') +
+      Object.keys(byDept).sort((a, b) => (/prompt book/i.test(b) ? 1 : 0) - (/prompt book/i.test(a) ? 1 : 0) || a.localeCompare(b)).map((d) => '<div class="sect"><h2>' + esc(d) + '</h2></div><div class="list">' + byDept[d].sort((a, b) => a.name.localeCompare(b.name)).map((i) => selRow(i, '<div class="mt">' + esc(who(i)) + ' · ' + esc(locName(i.location) || 'No place set') + '</div>')).join('') + '</div>').join('') +
       (its.length ? '' : '<div class="card empty">Nothing tagged for this show yet.</div>');
     if ($('#prShow')) $('#prShow').onclick = () => printCodes(its.map((i) => i.code));
     $('#ncf').onsubmit = async (e) => { e.preventDefault(); const n = $('#ncn').value.trim();
@@ -1052,7 +1077,7 @@
       '<div class="card"><div class="stats"><div><b>' + its.length + '</b><span>Pieces</span></div><div><b>' + out + '</b><span>Out now</span></div><div><b>' + its.filter((i) => i.status === 'Missing').length + '</b><span>Missing</span></div></div>' +
       '<div class="row" style="margin-top:10px"><button class="btn" id="coAll"' + (its.length ? '' : ' disabled') + '>Check out whole set</button><button class="btn ok" id="ciAll"' + (out ? '' : ' disabled') + '>Return whole set</button></div>' +
       '<div class="row" style="margin-top:8px"><button class="btn alt sm" id="prSet"' + (its.length ? '' : ' disabled') + '>Print stickers for this set</button><button class="btn alt sm" onclick="window.print()">Print this list</button></div></div>' +
-      Object.keys(byDept).sort().map((d) => '<div class="sect"><h2>' + esc(d) + '</h2></div><div class="list">' + byDept[d].sort((a, b) => a.name.localeCompare(b.name)).map((i) => rowHtml(i, '<div class="mt">' + esc(locName(i.location) || 'No place set') + (i.sublocation ? ' · ' + esc(i.sublocation) : '') + '</div>')).join('') + '</div>').join('') +
+      Object.keys(byDept).sort().map((d) => '<div class="sect"><h2>' + esc(d) + '</h2></div><div class="list">' + byDept[d].sort((a, b) => a.name.localeCompare(b.name)).map((i) => selRow(i, '<div class="mt">' + esc(locName(i.location) || 'No place set') + (i.sublocation ? ' · ' + esc(i.sublocation) : '') + '</div>')).join('') + '</div>').join('') +
       (its.length ? '' : '<div class="card empty">Nothing tagged for this character yet.</div>');
     if ($('#prSet')) $('#prSet').onclick = () => printCodes(its.map((i) => i.code));
     $('#coAll').onclick = () => modal('<h2>Check out ' + esc(character) + '\'s set</h2><form id="sf"><label>Who is taking it? (actor or dresser)<input id="h" required></label>' +
@@ -1103,7 +1128,7 @@
         kids.map((k) => '<a class="it" href="/l/' + esc(k.code) + '" data-nav><div class="th">▦</div><div class="bd"><div class="nm">' + esc(k.name) + '</div><div class="mt">' + esc(k.code) + ' · ' +
           D.items.filter((i) => i.location === k.code).length + ' items</div></div></a>').join('') + '</div>' : '') +
       '<div class="sect"><h2>' + here.length + ' item' + (here.length === 1 ? '' : 's') + ' here</h2></div>' +
-      '<div class="list">' + here.map((i) => rowHtml(i)).join('') + '</div>' + (here.length ? '' : '<div class="card empty">Nothing recorded here yet.</div>') +
+      '<div class="list">' + here.map((i) => selRow(i)).join('') + '</div>' + (here.length ? '' : '<div class="card empty">Nothing recorded here yet.</div>') +
       (D.role === 'admin' && !here.length ? '<button class="btn alt sm" id="dl" style="margin-top:16px;color:var(--bad)">Delete this place</button>' : '');
     $('#addHere').onclick = (e) => { e.preventDefault(); const st = LS.get('sticky', {}); st.location = code; LS.set('sticky', st); go('/add'); };
     $('#pl').onclick = () => printCodes([code], 'locations');

@@ -115,3 +115,10 @@ dl.facts dt{color:var(--muted);font-size:.88rem}dl.facts dd{margin:0;font-weight
 .altk.tmp{background:#fde68a;color:#78350f}.altk.perm{background:#dbeafe;color:#1e3a8a}.alts li.done .altk{background:#e5e7eb;color:#374151}
 .seg{display:grid;gap:8px;margin:0 0 14px}.seg label{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-weight:500;flex-wrap:wrap}
 .seg input{width:20px;height:20px;min-height:0;margin:2px 0 0;flex:none}.seg span{flex-basis:100%;padding-left:30px;color:var(--muted);font-size:.9em}
+.srow{display:flex;align-items:stretch;gap:6px}.srow>.it{flex:1;min-width:0}
+.sbox{display:flex;align-items:center;justify-content:center;width:44px;flex:none;border:1px solid var(--line);border-radius:12px;background:var(--card);cursor:pointer;margin:0}
+.sbox input{width:24px;height:24px;min-height:0;margin:0;cursor:pointer}
+#selbar{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(70px + env(safe-area-inset-bottom));z-index:40;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center;background:var(--ink);color:#fff;padding:10px 14px;border-radius:14px;box-shadow:0 8px 28px rgba(0,0,0,.3);max-width:calc(100vw - 24px)}
+#selbar .btn.alt{background:#fff;color:#111}
+.check .th{width:44px;height:44px;border-radius:8px;background:var(--bg) center/cover no-repeat;flex:none;display:flex;align-items:center;justify-content:center;color:var(--muted)}
+@media print{.sbox,#selbar{display:none!important}}
