@@ -793,7 +793,7 @@ const server = http.createServer(async (req, res) => {
         role: r, base: baseUrl(req), build: BUILD, tag_reader: !!TAG_KEY,
         me: account(req) ? adminOut(account(req)) : (isAdmin ? { name: 'Master admin code', manager: true, master: true } : null),
         admins: isManager(req) ? store.admins.map(adminOut) : [],
-        settings: { title: st.title, org: st.org, departments: st.departments, next: st.next, next_loc: st.next_loc,
+        settings: { title: st.title, org: st.org, label_text: st.label_text || '', departments: st.departments, next: st.next, next_loc: st.next_loc,
           categories: st.departments.map((d) => d.name),
           crew_key: isAdmin ? st.crew_key : undefined, admin_key: isAdmin ? st.admin_key : undefined },
         statuses: STATUSES, conditions: CONDITIONS, sizes: Object.fromEntries(Object.entries(SIZES).map(([k, v]) => [k, v.name])),
@@ -1225,6 +1225,7 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req); const st = store.settings;
       if (b.title != null && s(b.title, 80)) st.title = s(b.title, 80);
       if (b.org != null && s(b.org, 80)) st.org = s(b.org, 80);
+      if (b.label_text != null) st.label_text = s(b.label_text, 40);   // text printed on stickers (blank = organization name)
       // Restart numbering (only ever moves to a number no item or reserved sticker could clash with
       // when the inventory is empty; otherwise it can only move forward).
       if (b.reset_numbers && !store.items.length && !store.removed.length) st.next = {};

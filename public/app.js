@@ -1449,7 +1449,7 @@
     const bw = X + w - bx;
     // Band: the department code, big. The organisation name (BOLD THEATRE) gets its own line under the code.
     fitText(x, d.p, bw * 0.8, band * 0.7); x.textAlign = 'left'; x.fillText(d.p, bx + 12, Y + band / 2 + 2);
-    const org = String(D.settings.org || '').toUpperCase();
+    const org = String(D.settings.label_text || D.settings.org || '').toUpperCase();
     x.fillStyle = '#000';
     for (let rr = 0; rr < n - 4; rr++) for (let c = 0; c < n - 4; c++) if (q.isDark(rr, c)) x.fillRect(qx + (c + 2) * cell, qy + (rr + 2) * cell, cell, cell);
     x.fillStyle = '#111'; x.textBaseline = 'alphabetic';
@@ -1636,7 +1636,7 @@
         '<p>Current: <b class="code">' + esc(st.crew_key) + '</b></p>' +
         '<label>New crew code (6 or more letters/numbers)<input id="ck" autocapitalize="characters" autocomplete="off" placeholder="type one, or tap Make one for me"></label>' +
         '<div class="row"><button class="btn alt" type="button" data-gen="ck" data-pre="RIALTO-" data-len="6">Make one for me</button><button class="btn" type="button" id="saveCk">Change crew code</button></div></div>' : '') +
-      '<form class="card" id="sf2"><h3>Names</h3><label>App title<input id="tt" value="' + esc(st.title) + '"></label><label>Organization (printed on stickers)<input id="og" value="' + esc(st.org) + '"></label>' +
+      '<form class="card" id="sf2"><h3>Names</h3><label>App title<input id="tt" value="' + esc(st.title) + '"></label><label>Text on stickers <span class="muted small">(blank = organization name)</span><input id="lt" value="' + esc(st.label_text || '') + '" placeholder="' + esc(st.org || '') + '"></label><label>Organization (default owner)<input id="og" value="' + esc(st.org) + '"></label>' +
       '<label>Departments — one per line: CODE | Name | Room | #colour<textarea id="cats" rows="10" style="font-family:monospace;font-size:.85rem">' +
         esc(st.departments.map((d) => [d.p, d.name, d.room || '', d.color].join(' | ')).join('\n')) + '</textarea></label>' +
       '<p class="muted small">Codes are 2–4 letters. A department that has items keeps its code.</p><button class="btn alt">Save</button></form>' +
@@ -1674,7 +1674,7 @@
     };
     if ($('#saveAdk')) $('#saveAdk').onclick = () => saveCode('admin_key', 'admin code');
     if ($('#saveCk')) $('#saveCk').onclick = () => saveCode('crew_key', 'crew code', ' Reprint the crew poster (button above) and take down the old one.');
-    $('#sf2').onsubmit = async (e) => { e.preventDefault(); try { await api('POST', '/api/settings', { title: $('#tt').value, org: $('#og').value, departments: $('#cats').value.split('\n').map((l) => l.split('|').map((s) => s.trim())).filter((a) => a[0]).map(([p, name, room, color]) => ({ p, name, room, color })) }); await load(); render(); toast('Saved', 'good'); } catch (er) { toast(er.message, 'bad'); } };
+    $('#sf2').onsubmit = async (e) => { e.preventDefault(); try { await api('POST', '/api/settings', { title: $('#tt').value, org: $('#og').value, label_text: $('#lt').value, departments: $('#cats').value.split('\n').map((l) => l.split('|').map((s) => s.trim())).filter((a) => a[0]).map(([p, name, room, color]) => ({ p, name, room, color })) }); await load(); render(); toast('Saved', 'good'); } catch (er) { toast(er.message, 'bad'); } };
     $$('[data-restore]').forEach((b) => b.onclick = async () => { try { await api('POST', '/api/restore', { code: b.dataset.restore }); await load(); render(); toast('Restored', 'good'); } catch (er) { toast(er.message, 'bad'); } });
     $('#imp').onchange = async (e) => {
       const f = e.target.files[0]; if (!f) return;

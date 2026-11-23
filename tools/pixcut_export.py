@@ -234,7 +234,7 @@ def main():
     copies = a.copies or (2 if all(c.startswith('LOC-') for c in codes) else 1)
     codes = [c for c in codes for _ in range(copies)]
     depts = {d['p']: d for d in D['settings']['departments']}
-    org = D['settings'].get('org', '')
+    org = D['settings'].get('label_text') or D['settings'].get('org', '')
     by_code = {i['code']: i for i in D['items']}; locs = {l['code']: l for l in D.get('locations', [])}
     layout = a.layout or ('big' if all(c.startswith('LOC-') for c in codes) else 'std')
     # Never print a partial sheet (Jay, 2026-11-22): fill the empty spaces with the next blank
