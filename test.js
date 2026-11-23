@@ -163,6 +163,21 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     const c41 = r.j.items && r.j.items.find((x) => x.code === 'COST-0041'), c42 = r.j.items && r.j.items.find((x) => x.code === 'COST-0042');
     ok(r.s === 200 && c41 && c42 && c41.name === 'Navy peacoat' && !c41.needs_details && c42.name === 'Navy peacoat' && c42.size === '42L' && r.j.items.length === 2 && r.j.skipped.some((x) => x.code === 'PROP-0001') && JSON.stringify(c42.fit) === JSON.stringify(["Men's", "Women's"]),
       'copy onto existing stickers fills a photo-only one and creates an unused one, no new numbers: ' + JSON.stringify(r.j).slice(0, 200));
+    // Alterations: temporary ones can be undone or kept; permanent ones stay; bad input refused
+    r = await call('POST', '/api/items/COST-0040/alterations', { what: 'Hemmed 2 in.', kind: 'Temporary', show: 'A Few Good Men', undo_by: '2026-12-20' });
+    const alt = r.j.item && r.j.item.alterations[0];
+    ok(r.s === 200 && alt.kind === 'Temporary' && alt.status === 'Active' && alt.show === 'A Few Good Men', 'temporary alteration recorded');
+    r = await call('POST', '/api/items/COST-0040/alterations', { what: 'x', kind: 'Sometimes' });
+    ok(r.s === 400, 'alteration needs Permanent or Temporary');
+    r = await call('POST', '/api/items/COST-0040/alterations/' + alt.id, { action: 'undo' });
+    ok(r.s === 200 && r.j.item.alterations[0].status === 'Undone' && r.j.item.alterations[0].undone_by, 'temporary alteration marked undone');
+    r = await call('POST', '/api/items/COST-0040/alterations', { what: 'Dyed black', kind: 'Permanent' });
+    const pid2 = r.j.item.alterations[0].id;
+    r = await call('POST', '/api/items/COST-0040/alterations/' + pid2, { action: 'undo' });
+    ok(r.s === 400, 'a permanent alteration cannot be "undone"');
+    r = await fetch(INV + '/api/export.csv', { headers: { cookie } }); const csv = await r.text();
+    ok(/Permanent: Dyed black/.test(csv) && /Temporary \(undone\): Hemmed/.test(csv), 'alterations appear in the spreadsheet download');
+
     // One generic photo shared by identical items (green web belts)
     r = await call('POST', '/api/items', { name: 'Green web belt', category: 'ACC', size: 'One size' });
     const belt = r.j.item.code;

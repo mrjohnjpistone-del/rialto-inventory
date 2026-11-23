@@ -783,12 +783,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === 'GET' && p === '/api/export.csv') {
-      const cols = ['code', 'name', 'category', 'characters', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'fit', 'period', 'tags', 'value', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
+      const cols = ['code', 'name', 'category', 'characters', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'fit', 'period', 'tags', 'value', 'alterations', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
       const q = (v) => { let t = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
       const base = baseUrl(req);
       const rows = store.items.map((i) => cols.map((c) => c === 'location_name' ? ((findLoc(i.location) || {}).name || '') :
         c === 'characters' ? (i.roles || []).map((r) => (r.show ? r.show + ': ' : '') + r.character).join('; ') :
         c === 'fit' ? (i.fit || []).join('; ') :
+        c === 'alterations' ? (i.alterations || []).map((a) => a.kind + (a.status === 'Undone' ? ' (undone)' : '') + ': ' + a.what + (a.show ? ' [' + a.show + ']' : '')).join('; ') :
         c === 'photos' ? i.photos.map((x) => base + '/p/' + x + '.jpg').join(' ') : i[c]).map(q).join(','));
       res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="rialto-inventory-' + new Date().toISOString().slice(0, 10) + '.csv"' });
       return res.end('﻿' + cols.join(',') + '\n' + rows.join('\n'));
@@ -908,6 +909,41 @@ const server = http.createServer(async (req, res) => {
       if (method === 'DELETE' && dm) {
         item.photos = item.photos.filter((x) => x !== dm[1]);
         log(item, by, 'Removed photo', ''); save(); broadcast({ t: 'item', item: itemOut(item) });
+        return sendJson(res, 200, { ok: true, item: itemOut(item) });
+      }
+      // Alterations: what was changed on the item, Permanent or Temporary (temporary ones must be undone).
+      if (method === 'POST' && sub === '/alterations') {
+        const b = await readBody(req);
+        const what = s(b.what, 300); if (!what) return sendJson(res, 400, { error: 'Say what was altered.' });
+        const kind = b.kind === 'Temporary' ? 'Temporary' : b.kind === 'Permanent' ? 'Permanent' : '';
+        if (!kind) return sendJson(res, 400, { error: 'Pick Permanent or Temporary.' });
+        const a = { id: crypto.randomBytes(5).toString('hex'), what, kind, show: s(b.show, 120), character: s(b.character, 80), notes: s(b.notes, 600),
+          undo_by: kind === 'Temporary' ? s(b.undo_by, 20) : '', at: new Date().toISOString(), by, status: 'Active' };
+        item.alterations = [a].concat(item.alterations || []).slice(0, 100);
+        item.updated_at = a.at; item.updated_by = by;
+        log(item, by, kind + ' alteration', what + (a.show ? ' (' + a.show + ')' : ''));
+        if (a.show && rosterShow(a.show, true)) broadcast({ t: 'shows', shows: store.shows });
+        save(); broadcast({ t: 'item', item: itemOut(item) });
+        return sendJson(res, 200, { ok: true, item: itemOut(item) });
+      }
+      const alm = sub.match(/^\/alterations\/([a-f0-9]{10})$/);
+      if (method === 'POST' && alm) {
+        const a = (item.alterations || []).find((x) => x.id === alm[1]);
+        if (!a) return sendJson(res, 404, { error: 'No such alteration.' });
+        const b = await readBody(req);
+        if (b.action === 'undo') {
+          if (a.kind !== 'Temporary' || a.status !== 'Active') return sendJson(res, 400, { error: 'Only an active temporary alteration can be marked undone.' });
+          a.status = 'Undone'; a.undone_at = new Date().toISOString(); a.undone_by = by;
+          log(item, by, 'Alteration undone', a.what);
+        } else if (b.action === 'permanent') {
+          if (a.kind !== 'Temporary' || a.status !== 'Active') return sendJson(res, 400, { error: 'Only an active temporary alteration can be kept.' });
+          a.kind = 'Permanent'; a.undo_by = ''; log(item, by, 'Alteration kept (now permanent)', a.what);
+        } else if (b.action === 'delete') {
+          if (!isAdmin) return sendJson(res, 403, { error: 'Only an admin can delete an alteration record.' });
+          item.alterations = item.alterations.filter((x) => x !== a); log(item, by, 'Alteration record deleted', a.what);
+        } else return sendJson(res, 400, { error: 'Unknown action.' });
+        item.updated_at = new Date().toISOString(); item.updated_by = by;
+        save(); broadcast({ t: 'item', item: itemOut(item) });
         return sendJson(res, 200, { ok: true, item: itemOut(item) });
       }
       if (method === 'POST' && sub === '/readtag') {

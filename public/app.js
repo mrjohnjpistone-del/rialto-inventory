@@ -129,6 +129,7 @@
     const where = locName(it.location);
     const meta = [it.code, where, it.holder ? 'with ' + it.holder : '', it.qty > 1 ? '×' + it.qty : ''].filter(Boolean).join(' · ');
     return '<a class="it" href="/i/' + esc(it.code) + '" data-nav>' + thumb(it) + '<div class="bd"><div class="nm">' + chip(it.code) + ' ' + esc(it.name) + '</div><div class="mt">' + esc(meta) + (it.size ? ' · ' + esc(it.size) : '') + '</div>' +
+      (activeTemp(it).length ? '<div class="mt" style="color:var(--warn);font-weight:700">✂ temporary alteration to undo</div>' : '') +
       (extra || '') + '</div>' + pill(it.status) + '</a>';
   }
   function qrMake(text) {
@@ -200,6 +201,7 @@
     const miss = its.filter((i) => i.status === 'Missing').length;
     const nophoto = its.filter((i) => !i.photos.length).length;
     const needDet = its.filter((i) => i.needs_details).length;
+    const toUndo = its.filter((i) => activeTemp(i).length).length;
     const recentList = its.slice().sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')).slice(0, 6);
     const welcome = new URLSearchParams(location.search).get('welcome');
     view.innerHTML =
@@ -216,7 +218,8 @@
       '</div>' +
       '<div class="card"><div class="stats"><div><b>' + its.length + '</b><span>Items</span></div><div><b>' + out + '</b><span>Out now</span></div><div><b>' + miss + '</b><span>Missing</span></div></div>' +
       '<div class="row" style="margin-top:10px"><a class="btn alt sm" data-nav href="/browse?status=Checked out">Who has what</a><a class="btn alt sm" data-nav href="/browse?photo=none">' + nophoto + ' need photos</a>' +
-      '<a class="btn ' + (needDet ? '' : 'alt ') + 'sm" data-nav href="/browse?details=need">' + needDet + ' need details</a></div></div>' +
+      '<a class="btn ' + (needDet ? '' : 'alt ') + 'sm" data-nav href="/browse?details=need">' + needDet + ' need details</a>' +
+      '<a class="btn ' + (toUndo ? '' : 'alt ') + 'sm" data-nav href="/browse?alt=undo">' + toUndo + ' alteration' + (toUndo === 1 ? '' : 's') + ' to undo</a></div></div>' +
       '<div class="sect"><h2>Latest changes</h2><a href="/recent" data-nav class="small">See all</a></div>' +
       (recentList.length ? '<div class="list">' + recentList.map((i) => rowHtml(i, '<div class="mt">' + esc((i.history[0] || {}).action || '') + ' · ' + esc(i.updated_by || '') + ' · ' + esc(when(i.updated_at)) + '</div>')).join('') + '</div>'
         : '<div class="card empty">Nothing yet. Tap <b>Scan a sticker</b> on a blank label, or <b>Add item</b>, to start.</div>');
@@ -238,7 +241,7 @@
   // ── Browse / search ────────────────────────────────────────────────────────
   function browse(soft) {
     const sp = new URLSearchParams(location.search);
-    const st = { q: sp.get('q') || '', cat: sp.get('cat') || '', status: sp.get('status') || '', loc: sp.get('loc') || '', photo: sp.get('photo') || '', details: sp.get('details') || '', fit: sp.get('fit') || '', sort: sp.get('sort') || LS.get('sort', 'name') };
+    const st = { q: sp.get('q') || '', cat: sp.get('cat') || '', status: sp.get('status') || '', loc: sp.get('loc') || '', photo: sp.get('photo') || '', details: sp.get('details') || '', fit: sp.get('fit') || '', alt: sp.get('alt') || '', sort: sp.get('sort') || LS.get('sort', 'name') };
     if (soft && $('#bq')) { draw(); return; }
     view.innerHTML = '<h1>Items</h1>' +
       '<div class="search"><input id="bq" type="search" placeholder="Search name, color, size, tag, code…" value="' + esc(st.q) + '"></div>' +
@@ -248,12 +251,13 @@
       '<select id="fl">' + locOpts(st.loc).replace('— No location yet —', 'Any place') + '<option value="none"' + (st.loc === 'none' ? ' selected' : '') + '>No place set</option></select>' +
       '<select id="fp">' + opts([['none', 'No photo'], ['has', 'Has photo']], st.photo, 'Photos: any') + '</select>' +
       '<select id="ffit">' + opts(FITS.map((f) => [f, f]), st.fit, "Men's / Women's / Children's") + '</select>' +
+      '<select id="falt">' + opts([['undo', 'Temporary — to undo'], ['any', 'Any alteration'], ['perm', 'Permanently altered']], st.alt, 'Alterations: any') + '</select>' +
       '<select id="fdt">' + opts([['need', 'Needs details']], st.details, 'Details: any') + '</select>' +
       '<select id="fo">' + opts([['name', 'A → Z'], ['new', 'Newest'], ['updated', 'Recently changed'], ['code', 'Sticker code']], st.sort) + '</select>' +
       '</div><div id="showHit"></div><p class="muted small" id="cnt"></p><div class="list" id="res"></div>' +
       '<div class="row" style="margin-top:14px"><button class="btn alt" id="printRes">Print stickers for these</button><a class="btn alt" href="/api/export.csv">Download spreadsheet</a></div>';
     const sync = () => {
-      st.q = $('#bq').value; st.cat = $('#fc').value; st.status = $('#fs').value; st.loc = $('#fl').value; st.photo = $('#fp').value; st.details = $('#fdt').value; st.fit = $('#ffit').value; st.sort = $('#fo').value; LS.set('sort', st.sort);
+      st.q = $('#bq').value; st.cat = $('#fc').value; st.status = $('#fs').value; st.loc = $('#fl').value; st.photo = $('#fp').value; st.details = $('#fdt').value; st.fit = $('#ffit').value; st.alt = $('#falt').value; st.sort = $('#fo').value; LS.set('sort', st.sort);
       const u = new URLSearchParams(); Object.entries(st).forEach(([k, v]) => { if (v && k !== 'sort') u.set(k, v); });
       history.replaceState(null, '', '/browse' + (u.toString() ? '?' + u : '')); draw();
     };
@@ -270,8 +274,11 @@
         if (st.photo === 'has' && !i.photos.length) return false;
         if (st.details === 'need' && !i.needs_details) return false;
         if (st.fit && !(i.fit || []).includes(st.fit)) return false;
+        if (st.alt === 'undo' && !activeTemp(i).length) return false;
+        if (st.alt === 'any' && !(i.alterations || []).length) return false;
+        if (st.alt === 'perm' && !(i.alterations || []).some((a) => a.kind === 'Permanent')) return false;
         if (!words.length) return true;
-        const hay = [i.code, i.name, i.category, i.color, i.size, (i.fit || []).join(' '), i.period, i.tags, i.description, i.notes, i.holder, i.show, locName(i.location), i.sublocation, i.condition,
+        const hay = [i.code, i.name, i.category, i.color, i.size, (i.fit || []).join(' '), (i.alterations || []).map((a) => a.what + ' ' + a.show).join(' '), i.period, i.tags, i.description, i.notes, i.holder, i.show, locName(i.location), i.sublocation, i.condition,
           (i.roles || []).map((r) => r.show + ' ' + r.character).join(' ')].join(' ').toLowerCase();
         return words.every((w) => hay.includes(w));
       });
@@ -360,6 +367,7 @@
       '<dt>Last seen</dt><dd>' + esc(when(it.last_seen) || '—') + '</dd>' +
       '</dl><div class="row" style="margin-top:14px"><button class="btn alt" id="ed">Edit details</button>' +
       (it.status !== 'Missing' ? '<button class="btn alt" id="ms">Can\'t find it</button>' : '') + '</div></div>' +
+      alterCard(it) +
       '<div class="card"><h3>More just like this one?</h3><p class="muted small">Identical items (ten green web belts)? Tap <b>Scan stickers to copy</b> and scan each one\'s sticker: each gets these details' + (it.photos.length ? ' and this photo' : '') + '. No new photos, no typing.</p>' +
       '<div class="row"><button class="btn" id="cpy">⌗ Scan stickers to copy</button><button class="btn alt" id="cpyN">Make several copies</button></div></div>' +
       '<div class="card"><div class="qrbox">' + qrSvg(qrUrl(it.code)) + '<div><b>Sticker</b><p class="muted small" style="margin:.3em 0 .6em">Lost or damaged sticker? Print a new one.</p>' +
@@ -384,6 +392,14 @@
     $('#ed').onclick = () => editForm(it);
     if ($('#fillNow')) $('#fillNow').onclick = () => editForm(it);
     $('#cpy').onclick = () => copyToSticker(it);
+    $('#altAdd').onclick = () => alterForm(it);
+    $$('[data-alt]').forEach((b) => b.onclick = async () => {
+      const [id, action] = b.dataset.alt.split(':');
+      if (action === 'delete' && !confirm('Delete this alteration record? (Use this only for a mistake.)')) return;
+      try { const r = await api('POST', '/api/items/' + it.code + '/alterations/' + id, { action }); upsert(r.item); render(true);
+        toast(action === 'undo' ? 'Marked undone ✓' : action === 'permanent' ? 'Kept, now permanent' : 'Deleted', 'good'); }
+      catch (e) { toast(e.message, 'bad'); }
+    });
     $('#cpyN').onclick = () => makeCopies(it);
     if ($('#ms')) $('#ms').onclick = async () => { if (!confirm('Mark ' + it.name + ' as missing?')) return; await act(it.code, { action: 'missing' }, 'Marked missing'); };
     $('#pr').onclick = () => printCodes([it.code]);
@@ -433,6 +449,49 @@
     (m, close) => {
       $('#ok', m).onclick = async () => { close(); await act(it.code, { action: 'move', location: $('#lc', m).value, sublocation: $('#sub', m).value }, 'Place saved'); };
       $('#sc', m).onclick = () => { close(); openScanner({ mode: 'pickLoc', prompt: 'Scan the shelf / rack / bin sticker', onLoc: (l) => act(it.code, { action: 'move', location: l.code }, 'Now at ' + l.name) }); };
+    });
+  }
+  // ── Alterations ────────────────────────────────────────────────────────────
+  const activeTemp = (i) => (i.alterations || []).filter((a) => a.kind === 'Temporary' && a.status === 'Active');
+  function alterCard(it) {
+    const list = it.alterations || [];
+    const isAdm = D.role === 'admin';
+    return '<div class="card"><div class="sect" style="margin:0"><h3 style="margin:0">Alterations</h3><button class="btn alt sm" id="altAdd">✂ Add alteration</button></div>' +
+      (activeTemp(it).length ? '<div class="banner" style="margin-top:10px"><b>' + activeTemp(it).length + ' temporary alteration' + (activeTemp(it).length === 1 ? '' : 's') + ' to undo</b> before this goes back in stock.</div>' : '') +
+      (list.length ? '<ul class="alts">' + list.map((a) => {
+        const live = a.kind === 'Temporary' && a.status === 'Active';
+        return '<li class="' + (a.status === 'Undone' ? 'done' : '') + '"><span class="altk ' + (a.kind === 'Temporary' ? 'tmp' : 'perm') + '">' + (a.status === 'Undone' ? 'Undone' : a.kind) + '</span> <b>' + esc(a.what) + '</b>' +
+          (a.show ? ' <span class="muted">· ' + esc(a.show) + (a.character ? ' / ' + esc(a.character) : '') + '</span>' : '') +
+          (a.undo_by && live ? ' <span class="muted">· undo by ' + esc(a.undo_by) + '</span>' : '') +
+          (a.notes ? '<div class="small">' + esc(a.notes) + '</div>' : '') +
+          '<div class="muted small">' + esc(a.by) + ' · ' + esc(when(a.at)) + (a.undone_at ? ' · undone by ' + esc(a.undone_by) + ' ' + esc(when(a.undone_at)) : '') + '</div>' +
+          (live || isAdm ? '<div class="row" style="margin-top:6px">' + (live ? '<button class="btn sm" data-alt="' + a.id + ':undo">✓ Mark undone</button><button class="btn alt sm" data-alt="' + a.id + ':permanent">Keep it (make permanent)</button>' : '') +
+            (isAdm ? '<button class="btn alt sm" style="color:var(--bad)" data-alt="' + a.id + ':delete">Delete</button>' : '') + '</div>' : '') + '</li>';
+      }).join('') + '</ul>' : '<p class="muted small" style="margin:8px 0 0">None recorded. Hemmed, taken in, dyed, cut, painted? Log it here.</p>') + '</div>';
+  }
+  function alterForm(it) {
+    const shows = (D.shows || []).map((s) => s.name);
+    const cur = ((it.roles || []).find((r) => r.show) || {}).show || '';
+    modal('<h2>Alteration on ' + esc(it.name) + '</h2><form id="alf">' +
+      '<label>What was changed? *<input id="al_what" required maxlength="300" placeholder="e.g. Hemmed 2 in., took in waist 1 in., dyed black"></label>' +
+      '<div class="seg"><label><input type="radio" name="alk" value="Temporary" checked> <b>Temporary</b><span>basted, pinned, safety-pinned — undo after the show</span></label>' +
+      '<label><input type="radio" name="alk" value="Permanent"> <b>Permanent</b><span>cut, sewn for good, dyed, painted</span></label></div>' +
+      '<label>For which show? <span class="muted small">(optional)</span><input id="al_show" list="al_shows" value="' + esc(cur) + '"><datalist id="al_shows">' + shows.map((s) => '<option value="' + esc(s) + '">').join('') + '</datalist></label>' +
+      '<div class="grid2"><label>Character <span class="muted small">(optional)</span><input id="al_char"></label>' +
+      '<label id="al_undo_l">Undo by <span class="muted small">(optional)</span><input id="al_undo" type="date"></label></div>' +
+      '<label>Notes <span class="muted small">(optional)</span><textarea id="al_notes" placeholder="Original measurement, who did it, thread colour…"></textarea></label>' +
+      '<button class="btn big">Save alteration</button><button type="button" class="btn alt big" data-close style="margin-top:8px">Cancel</button></form>',
+    (m, close) => {
+      const sync = () => { $('#al_undo_l', m).style.display = $('input[name=alk]:checked', m).value === 'Temporary' ? '' : 'none'; };
+      $$('input[name=alk]', m).forEach((x) => x.onchange = sync);
+      $('#alf', m).onsubmit = async (e) => {
+        e.preventDefault();
+        try {
+          const r = await api('POST', '/api/items/' + it.code + '/alterations', { what: $('#al_what', m).value, kind: $('input[name=alk]:checked', m).value,
+            show: $('#al_show', m).value, character: $('#al_char', m).value, undo_by: $('#al_undo', m).value, notes: $('#al_notes', m).value });
+          upsert(r.item); close(); render(true); toast('Alteration saved', 'good');
+        } catch (er) { toast(er.message, 'bad'); }
+      };
     });
   }
   function tagNote(t) {

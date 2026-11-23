@@ -110,3 +110,8 @@ dl.facts dt{color:var(--muted);font-size:.88rem}dl.facts dd{margin:0;font-weight
 .fits{border:1px solid var(--line,#ddd);border-radius:12px;padding:8px 12px 10px;margin:0 0 14px;display:flex;flex-wrap:wrap;gap:6px 18px}
 .fits legend{font-weight:700;padding:0 4px}
 .fits .check{margin:4px 0}
+.alts{list-style:none;padding:0;margin:10px 0 0}.alts li{padding:10px 0;border-top:1px solid var(--line)}.alts li.done{opacity:.6}
+.altk{display:inline-block;font-size:.75em;font-weight:800;letter-spacing:.04em;text-transform:uppercase;padding:2px 8px;border-radius:999px;background:#e5e7eb;color:#111}
+.altk.tmp{background:#fde68a;color:#78350f}.altk.perm{background:#dbeafe;color:#1e3a8a}.alts li.done .altk{background:#e5e7eb;color:#374151}
+.seg{display:grid;gap:8px;margin:0 0 14px}.seg label{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-weight:500;flex-wrap:wrap}
+.seg input{width:20px;height:20px;min-height:0;margin:2px 0 0;flex:none}.seg span{flex-basis:100%;padding-left:30px;color:var(--muted);font-size:.9em}
