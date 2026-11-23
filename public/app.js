@@ -1048,13 +1048,14 @@
     const here = D.items.filter((i) => i.location === code).sort((a, b) => a.name.localeCompare(b.name));
     view.innerHTML = '<span class="code muted">' + esc(l.code) + '</span><h1>' + esc(l.name) + '</h1>' + (l.area ? '<p class="muted">' + esc(l.area) + '</p>' : '') +
       '<div class="row" style="margin-bottom:14px"><a class="btn" href="/audit/' + esc(code) + '" data-nav>Audit this place</a><button class="btn blue" id="put">Put items here</button></div>' +
-      '<div class="row" style="margin-bottom:14px"><a class="btn alt" href="/add" id="addHere">Add new item here</a><button class="btn alt" id="pl">Print sticker</button><button class="btn alt" id="rn">Rename</button></div>' +
+      '<p class="muted small" style="margin:-6px 0 12px"><b>Put items here</b>: scan each item\'s sticker as it goes in, blank stickers too. Taking something out? Scan it into its new place, or use <b>Move it</b> on the item.</p>' +
+      '<div class="row" style="margin-bottom:14px"><a class="btn alt" href="/add" id="addHere">Add new item here</a><button class="btn alt" id="pl">Print sticker</button><button class="btn alt" onclick="window.print()">Print contents list</button><button class="btn alt" id="rn">Rename</button></div>' +
       '<div class="sect"><h2>' + here.length + ' item' + (here.length === 1 ? '' : 's') + ' here</h2></div>' +
       '<div class="list">' + here.map((i) => rowHtml(i)).join('') + '</div>' + (here.length ? '' : '<div class="card empty">Nothing recorded here yet.</div>') +
       (D.role === 'admin' && !here.length ? '<button class="btn alt sm" id="dl" style="margin-top:16px;color:var(--bad)">Delete this place</button>' : '');
     $('#addHere').onclick = (e) => { e.preventDefault(); const st = LS.get('sticky', {}); st.location = code; LS.set('sticky', st); go('/add'); };
     $('#pl').onclick = () => printCodes([code], 'locations');
-    $('#put').onclick = () => openScanner({ mode: 'put', loc: l, prompt: 'Scan each item you are putting in ' + l.name });
+    $('#put').onclick = () => openScanner({ mode: 'put', loc: l, prompt: 'Scan each item you are putting in ' + l.name, onClose: () => render(true) });
     $('#rn').onclick = async () => {
       const n = prompt('New name for this place', l.name); if (!n) return;
       try { const r = await api('PATCH', '/api/locations/' + code, { name: n }); Object.assign(l, r.loc); render(); } catch (er) { toast(er.message, 'bad'); }
@@ -1144,6 +1145,12 @@
       }
       if (r.kind === 'loc') { msg.textContent = 'That is a place sticker. Scan item stickers.'; return; }
       const it = item(r.code);
+      if (!it && o.mode === 'put' && deptOf(r.code)) {
+        try { const x = await api('POST', '/api/items', { code: r.code, needs_details: true, location: o.loc.code }); upsert(x.item);
+          add('✓ ' + esc(r.code) + ' (new) → ' + esc(o.loc.name)); msg.textContent = '✓ ' + r.code + ' is in ' + o.loc.name + ' — add its photo and details later'; }
+        catch (e) { add('✕ ' + esc(e.message)); }
+        return;
+      }
       if (!it) { add('⚠ ' + esc(r.code) + ' is a blank sticker — add it after'); msg.textContent = r.code + ' is not on an item yet.'; return; }
       if (o.mode === 'audit') {
         o.onItem(it);

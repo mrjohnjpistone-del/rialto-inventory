@@ -186,6 +186,13 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     ok(r.j.item.needs_details === true, 'an item named "Details needed" stays on the need-details list');
     await call('DELETE', '/api/items/ACC-0080');
 
+    // A bin: blank sticker scanned into it is saved already inside the bin
+    r = await call('POST', '/api/locations', { name: 'Bin 1', area: 'Plastic bins' });
+    const bin = (r.j.loc || r.j.location || {}).code;
+    r = await call('POST', '/api/items', { code: 'ACC-0070', needs_details: true, location: bin });
+    ok(r.s === 200 && bin && r.j.item.location === bin && r.j.item.needs_details, 'blank sticker put into a bin lands in that bin: ' + JSON.stringify({ bin, loc: r.j.item && r.j.item.location }));
+    await call('DELETE', '/api/items/ACC-0070');
+
     // Prompt books always belong to a show
     r = await call('POST', '/api/items', { code: 'BOOK-0001', name: 'SM prompt book' });
     ok(r.s === 400 && /show/.test(r.j.error), 'a prompt book without a show is refused');
