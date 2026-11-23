@@ -237,6 +237,36 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     sr = await fetch(S + '/login', { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'mode=admin&user=props&password=' + encodeURIComponent(sj.temp_password) + '&next=%2Fsettings' });
     ok(sr.status === 303 && sr.headers.get('location') === '/settings' && /ra=/.test(sr.headers.get('set-cookie') || ''), 'admin sign-in form works on a fresh install with no backup');
     solo.kill();
+
+    // Tag reader, against a fake AI endpoint (costs nothing): auto-fills blanks after a photo, never overwrites typed fields
+    let aiCalls = 0, aiSawImage = false;
+    const fake = require('http').createServer((q, s2) => { let b = ''; q.on('data', (d) => b += d); q.on('end', () => {
+      aiCalls++; try { aiSawImage = JSON.parse(b).messages[0].content.some((c) => c.type === 'image'); } catch (e) { /* */ }
+      s2.writeHead(200, { 'Content-Type': 'application/json' });
+      s2.end(JSON.stringify({ content: [{ type: 'text', text: 'Here: {"has_tag":true,"name":"Marine green service trousers","color":"Olive green","size":"36L","fit":["Men\'s"],"description":"Coates Brothers, 55% polyester / 45% wool","tags":"pants, USMC","period":"","condition":"","confidence":"high"}' }] }));
+    }); }).listen(3915);
+    const T = 'http://localhost:3914';
+    const tagApp = start(__dirname, { PORT: 3914, DATA_DIR: path.join(tmp, 'tag'), CREW_KEY: 'CREW-TAG', ADMIN_KEY: 'ADMIN-TAGKEY', ANTHROPIC_API_KEY: 'test-key', TAG_API_URL: 'http://localhost:3915/v1/messages', TAG_DELAY_MS: '300' });
+    await up(T + '/health');
+    const tc = (await fetch(T + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'CREW-TAG' }) })).headers.get('set-cookie').split(';')[0];
+    const tcall = async (m, p2, body) => { const rr = await fetch(T + p2, { method: m, headers: { 'Content-Type': 'application/json', 'x-rialto': '1', cookie: tc }, body: body ? JSON.stringify(body) : undefined }); return { s: rr.status, j: await rr.json() }; };
+    let tr = await tcall('GET', '/api/data'); ok(tr.j.tag_reader === true, 'site reports the tag reader is on');
+    await tcall('POST', '/api/items', { code: 'COST-0100', needs_details: true });
+    await tcall('POST', '/api/items/COST-0100/photos', { full: JPG, thumb: JPG });
+    for (let i = 0; i < 30; i++) { await wait(200); tr = await tcall('GET', '/api/data'); if (tr.j.items[0].tag_read && tr.j.items[0].tag_read.status === 'done') break; }
+    let ti = tr.j.items[0];
+    ok(aiCalls === 1 && aiSawImage && ti.name === 'Marine green service trousers' && ti.size === '36L' && ti.fit[0] === "Men's" && !ti.needs_details && ti.tag_read.status === 'done',
+      'photo on a blank sticker gets read automatically: ' + JSON.stringify({ aiCalls, aiSawImage, name: ti.name, size: ti.size, st: ti.tag_read }));
+    await tcall('PATCH', '/api/items/COST-0100', { size: '38L' });
+    tr = await tcall('POST', '/api/items/COST-0100/readtag', {});
+    ok(tr.s === 200 && tr.j.item.size === '38L' && tr.j.item.name === 'Marine green service trousers', 'Read tag again never overwrites a size a person typed');
+    await tcall('POST', '/api/items', { name: 'Typed by hand', category: 'Costumes', size: 'M' });
+    tr = await tcall('GET', '/api/data');
+    const typed = tr.j.items.find((x) => x.name === 'Typed by hand');
+    await tcall('POST', '/api/items/' + typed.code + '/photos', { full: JPG, thumb: JPG });
+    const before = aiCalls; await wait(900);
+    ok(aiCalls === before, 'items that already have their details are not sent to the reader (no cost)');
+    tagApp.kill(); fake.close();
   } catch (e) { fails++; console.log('ERROR', e); console.log(inv.out); }
   inv.kill(); aud.kill();
   console.log(passes + ' passed, ' + fails + ' failed');

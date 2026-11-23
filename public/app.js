@@ -337,7 +337,9 @@
       (it.photos.length ? '<div class="photos">' + it.photos.map((p) => '<img src="/p/' + p + '.jpg" alt="" loading="lazy" data-pid="' + p + '">').join('') + '</div>'
         : '<label class="nophoto" for="ph">No photo yet — tap to take one</label>') +
       '<input type="file" id="ph" accept="image/*" capture="environment" hidden><input type="file" id="phg" accept="image/*" multiple hidden>' +
-      '<div class="row" style="margin-bottom:14px"><button class="btn alt sm" id="addPh">📷 Take photo</button><button class="btn alt sm" id="addPhG">From library</button></div>' +
+      '<div class="row" style="margin-bottom:14px"><button class="btn alt sm" id="addPh">📷 Take photo</button><button class="btn alt sm" id="addPhG">From library</button>' +
+      (D.tag_reader && it.photos.length ? '<button class="btn alt sm" id="rdTag"' + (it.tag_read && it.tag_read.status === 'reading' ? ' disabled>🏷 Reading tag…' : '>🏷 Read tag' + (it.tag_read ? ' again' : '')) + '</button>' : '') + '</div>' +
+      (it.tag_read ? '<p class="muted small" style="margin:-6px 0 12px">' + tagNote(it.tag_read) + '</p>' : '') +
       ((it.status === 'Checked out' || it.status === 'In a show') ? '<div class="banner"><b>With ' + esc(it.holder) + '</b>' + (it.show ? ' for ' + esc(it.show) : '') + (it.due ? ' · due back ' + esc(it.due) : '') + '</div>' : '') +
       '<div class="row" style="margin-bottom:14px">' +
       ((it.status === 'Checked out' || it.status === 'In a show') ? '<button class="btn ok" id="ci">Check in / returned</button>' : '<button class="btn" id="co">Check out</button>') +
@@ -365,6 +367,13 @@
       '<div class="card"><h3>History</h3><ul class="hist">' + it.history.map((h) => '<li><b>' + esc(h.action) + '</b>' + (h.detail ? ' — ' + esc(h.detail) : '') + '<br><span class="muted small">' + esc(h.by) + ' · ' + esc(when(h.at)) + '</span></li>').join('') + '</ul></div>' +
       (D.role === 'admin' ? '<button class="btn alt sm" id="del" style="color:var(--bad)">Remove from inventory</button>' : '');
     $('#addPh').onclick = () => $('#ph').click(); $('#addPhG').onclick = () => $('#phg').click();
+    if ($('#rdTag')) $('#rdTag').onclick = async () => {
+      const b = $('#rdTag'); b.disabled = true; b.textContent = '🏷 Reading tag…';
+      try { const r = await api('POST', '/api/items/' + it.code + '/readtag', {}); upsert(r.item);
+        toast(r.filled.length ? 'Filled in: ' + r.filled.join(', ') : (r.has_tag ? 'Tag read, nothing new to fill' : 'No readable tag in the photos'), r.filled.length ? 'good' : '');
+        render(true);
+      } catch (e) { toast(e.message, 'bad'); b.disabled = false; b.textContent = '🏷 Read tag again'; }
+    };
     const nophoto = $('.nophoto'); if (nophoto) nophoto.onclick = (e) => { e.preventDefault(); $('#ph').click(); };
     $('#ph').onchange = (e) => uploadPhotos(it.code, e.target.files);
     $('#phg').onchange = (e) => uploadPhotos(it.code, e.target.files);
@@ -425,6 +434,12 @@
       $('#ok', m).onclick = async () => { close(); await act(it.code, { action: 'move', location: $('#lc', m).value, sublocation: $('#sub', m).value }, 'Place saved'); };
       $('#sc', m).onclick = () => { close(); openScanner({ mode: 'pickLoc', prompt: 'Scan the shelf / rack / bin sticker', onLoc: (l) => act(it.code, { action: 'move', location: l.code }, 'Now at ' + l.name) }); };
     });
+  }
+  function tagNote(t) {
+    if (t.status === 'reading') return '🏷 Reading the tag in the photos…';
+    if (t.status === 'error') return '🏷 Tag reading failed — tap Read tag again.';
+    if (t.status === 'no_tag') return '🏷 No readable tag in these photos. Add a close, flat photo of the label and tap Read tag again.';
+    return '🏷 Details read from the tag photo' + (t.confidence && t.confidence !== 'high' ? ' (tag was hard to read — check the size)' : '') + '. Anything you type yourself is never overwritten.';
   }
   function photoMenu(it, pid) {
     modal('<img src="/p/' + pid + '.jpg" style="width:100%;border-radius:12px;margin-bottom:12px">' +

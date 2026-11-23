@@ -428,6 +428,96 @@ function applyFields(item, b) {
 }
 function itemOut(it) { const o = Object.assign({}, it); o.history = it.history.slice(0, 60); return o; }
 
+// ── Tag reader: the AI reads the garment label in an item's photos and fills the blanks ──
+// Runs by itself ~25 s after the last photo lands on an item that still needs details (so the tag
+// shot taken right after the garment shot is included), and on demand from "Read tag again".
+// Never overwrites anything a person typed: it only fills empty fields, or fields it filled itself
+// earlier (item.auto_fields) and nobody has edited since.
+const TAG_KEY = process.env.ANTHROPIC_API_KEY || '';
+const TAG_MODEL = process.env.TAG_MODEL || 'claude-sonnet-5-5';
+const TAG_API = process.env.TAG_API_URL || 'https://api.anthropic.com/v1/messages';
+const TAG_DAILY_CAP = Number(process.env.TAG_DAILY_CAP || 400);   // cost guard: ~1-2 cents a read
+const TAG_FIELDS = ['name', 'color', 'size', 'fit', 'description', 'tags', 'period', 'condition'];
+const tagTimers = new Map();
+const tagRunning = new Set();
+function tagUsageOk() {
+  const day = new Date().toISOString().slice(0, 10);
+  store.tag_usage = store.tag_usage && store.tag_usage.day === day ? store.tag_usage : { day, reads: 0, total: (store.tag_usage && store.tag_usage.total) || 0 };
+  return store.tag_usage.reads < TAG_DAILY_CAP;
+}
+function wantsTagRead(item) { return !!TAG_KEY && item.photos.length > 0 && (item.needs_details || !item.size); }
+function scheduleTagRead(item) {
+  if (!wantsTagRead(item)) return;
+  clearTimeout(tagTimers.get(item.code));
+  tagTimers.set(item.code, setTimeout(() => { tagTimers.delete(item.code); readTag(item.code, 'Tag reader').catch(() => {}); }, Number(process.env.TAG_DELAY_MS || 25000)));
+}
+async function photoBytes(pid) {
+  try { return fs.readFileSync(path.join(PHOTO_DIR, pid + '.jpg')); } catch (e) { return fetchMirroredPhoto('rinv-' + pid); }
+}
+const TAG_PROMPT = `You are cataloguing a theatre's costume stock. These photos are all ONE item: usually the garment itself plus a close-up of its label or tag.
+The small square sticker with a QR code and a code like COST-0012 is the theatre's own inventory sticker: ignore it.
+Report ONLY what you can actually see. Never guess a size, brand or number you cannot read. Return ONLY a JSON object, no other text:
+{"has_tag": true if a garment label/tag with readable text is visible, else false,
+ "name": short plain name someone would search for, colour + garment type, max 6 words (e.g. "Olive green Marine service coat"),
+ "color": main colour,
+ "size": exactly as printed on the tag (e.g. "36L", "15 1/2", "M", "12MR"), "" if not readable,
+ "fit": array with any of "Men's","Women's","Children's" only if the tag says so (e.g. "Trousers, Men's") or it is unmistakable, else [],
+ "description": 1-2 sentences with everything readable on the tag: brand, style/model or stock number (NSN), fabric content, care, maker, plus notable features (insignia, chevrons, pockets, damage),
+ "tags": comma-separated search words (garment type, uniform type, service branch, colour words),
+ "period": era/style only if obvious (e.g. "Modern", "1980s military"), else "",
+ "condition": "New", "Good", "Fair", "Poor" or "Needs repair" only if clearly visible, else "",
+ "confidence": "high" if size and label text are clearly readable, "medium" if partly, "low" if mostly guessed}`;
+async function readTag(code, by, manual) {
+  const item = findItem(code);
+  if (!item || !TAG_KEY || !item.photos.length) return { ok: false, error: 'No photos to read.' };
+  if (tagRunning.has(item.code)) return { ok: false, error: 'Already reading this tag.' };
+  if (!tagUsageOk()) return { ok: false, error: 'Daily tag-reading limit reached (' + TAG_DAILY_CAP + '). Try again tomorrow.' };
+  tagRunning.add(item.code);
+  item.tag_read = { status: 'reading', at: new Date().toISOString() }; broadcast({ t: 'item', item: itemOut(item) });
+  try {
+    const content = [];
+    for (const pid of item.photos.slice(0, 4)) {
+      const buf = await photoBytes(pid);
+      if (buf) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: buf.toString('base64') } });
+    }
+    if (!content.length) throw new Error('photos not found');
+    content.push({ type: 'text', text: TAG_PROMPT });
+    store.tag_usage.reads++; store.tag_usage.total = (store.tag_usage.total || 0) + 1;
+    const r = await fetch(TAG_API, { method: 'POST', headers: { 'x-api-key': TAG_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: TAG_MODEL, max_tokens: 900, messages: [{ role: 'user', content }] }), signal: AbortSignal.timeout(90000) });
+    if (!r.ok) throw new Error('reader answered ' + r.status + ' ' + (await r.text()).slice(0, 160));
+    const j = await r.json();
+    const txt = ((j.content || []).find((c) => c.type === 'text') || {}).text || '';
+    const m = txt.match(/\{[\s\S]*\}/); if (!m) throw new Error('no answer');
+    const x = JSON.parse(m[0]);
+    const live = findItem(code); if (!live) return { ok: false, error: 'Item was removed.' };
+    const auto = new Set(live.auto_fields || []);
+    const open = (f) => auto.has(f) || (f === 'fit' ? !(live.fit || []).length : f === 'name' ? !!live.needs_details : !String(live[f] || '').trim());
+    const b = {};
+    if (x.has_tag !== false || manual) {
+      TAG_FIELDS.forEach((f) => {
+        const v = x[f];
+        if (v == null || (Array.isArray(v) ? !v.length : !String(v).trim())) return;
+        if (open(f)) b[f] = v;
+      });
+    }
+    if (b.name && !x.has_tag && !live.needs_details) delete b.name;
+    if (b.size && x.confidence && x.confidence !== 'high' && (open('notes'))) b.notes = 'Read from the tag photo; tag was hard to read. Double-check the size.';
+    const changed = Object.keys(b).length ? applyFields(live, b) : [];
+    if (live.needs_details && changed.includes('name') && live.name !== 'Details needed') delete live.needs_details;
+    live.auto_fields = [...new Set([...auto].filter((f) => !changed.includes(f)).concat(changed.filter((f) => TAG_FIELDS.includes(f) || f === 'notes')))];
+    live.tag_read = { status: x.has_tag ? 'done' : 'no_tag', at: new Date().toISOString(), confidence: x.confidence || '', filled: changed };
+    if (changed.length) { live.updated_at = new Date().toISOString(); live.updated_by = by; log(live, by, 'Read tag', changed.join(', ')); }
+    save(); broadcast({ t: 'item', item: itemOut(live) });
+    return { ok: true, item: itemOut(live), filled: changed, has_tag: !!x.has_tag };
+  } catch (e) {
+    const live = findItem(code);
+    if (live) { live.tag_read = { status: 'error', at: new Date().toISOString(), error: String(e.message || e).slice(0, 160) }; save(); broadcast({ t: 'item', item: itemOut(live) }); }
+    console.log('tag read failed', code, e.message);
+    return { ok: false, error: 'Could not read the tag: ' + String(e.message || e).slice(0, 120) };
+  } finally { tagRunning.delete(code); }
+}
+
 // ── Static files ─────────────────────────────────────────────────────────────
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.ico': 'image/x-icon' };
@@ -673,7 +763,7 @@ const server = http.createServer(async (req, res) => {
     if (method === 'GET' && p === '/api/data') {
       const st = store.settings;
       return sendJson(res, 200, {
-        role: r, base: baseUrl(req), build: BUILD,
+        role: r, base: baseUrl(req), build: BUILD, tag_reader: !!TAG_KEY,
         me: account(req) ? adminOut(account(req)) : (isAdmin ? { name: 'Master admin code', manager: true, master: true } : null),
         admins: isManager(req) ? store.admins.map(adminOut) : [],
         settings: { title: st.title, org: st.org, departments: st.departments, next: st.next, next_loc: st.next_loc,
@@ -744,6 +834,7 @@ const server = http.createServer(async (req, res) => {
         const b = await readBody(req);
         const prevLoc = item.location;
         const changed = applyFields(item, b);
+        if (item.auto_fields) item.auto_fields = item.auto_fields.filter((f) => !Object.prototype.hasOwnProperty.call(b, f));
         if (item.needs_details && changed.includes('name') && item.name !== 'Details needed') { delete item.needs_details; changed.push('details added'); }
         if (changed.length) {
           item.updated_at = new Date().toISOString(); item.updated_by = by;
@@ -810,6 +901,7 @@ const server = http.createServer(async (req, res) => {
         mirrorPhoto('rinv-' + pid, full); mirrorPhoto('rinv-' + pid + '_t', th);
         item.photos.push(pid); item.updated_at = new Date().toISOString(); item.updated_by = by;
         log(item, by, 'Added photo', ''); save(); broadcast({ t: 'item', item: itemOut(item) });
+        scheduleTagRead(item);
         return sendJson(res, 200, { ok: true, item: itemOut(item) });
       }
       const dm = sub.match(/^\/photos\/([a-f0-9]{16,40})$/);
@@ -817,6 +909,12 @@ const server = http.createServer(async (req, res) => {
         item.photos = item.photos.filter((x) => x !== dm[1]);
         log(item, by, 'Removed photo', ''); save(); broadcast({ t: 'item', item: itemOut(item) });
         return sendJson(res, 200, { ok: true, item: itemOut(item) });
+      }
+      if (method === 'POST' && sub === '/readtag') {
+        if (!TAG_KEY) return sendJson(res, 400, { error: 'The tag reader is not switched on.' });
+        clearTimeout(tagTimers.get(item.code)); tagTimers.delete(item.code);
+        const out = await readTag(item.code, by, true);
+        return sendJson(res, out.ok ? 200 : 400, out);
       }
       if (method === 'POST' && sub === '/copies') {
         // Copy this item's details onto other stickers.
