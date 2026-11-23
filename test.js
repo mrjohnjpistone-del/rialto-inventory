@@ -163,6 +163,15 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     const c41 = r.j.items && r.j.items.find((x) => x.code === 'COST-0041'), c42 = r.j.items && r.j.items.find((x) => x.code === 'COST-0042');
     ok(r.s === 200 && c41 && c42 && c41.name === 'Navy peacoat' && !c41.needs_details && c42.name === 'Navy peacoat' && c42.size === '42L' && r.j.items.length === 2 && r.j.skipped.some((x) => x.code === 'PROP-0001') && JSON.stringify(c42.fit) === JSON.stringify(["Men's", "Women's"]),
       'copy onto existing stickers fills a photo-only one and creates an unused one, no new numbers: ' + JSON.stringify(r.j).slice(0, 200));
+    // One generic photo shared by identical items (green web belts)
+    r = await call('POST', '/api/items', { name: 'Green web belt', category: 'ACC', size: 'One size' });
+    const belt = r.j.item.code;
+    await call('POST', '/api/items/' + belt + '/photos', { full: JPG, thumb: JPG });
+    r = await call('POST', '/api/items/' + belt + '/copies', { codes: ['ACC-0090', 'ACC-0091'], photo: true });
+    const bp = r.j.items && r.j.items.map((x) => x.photos[0]);
+    r = await call('GET', '/api/data'); const src = r.j.items.find((x) => x.code === belt);
+    ok(bp && bp.length === 2 && bp.every((p) => p && p === src.photos[0]), 'scanned belt stickers share the one generic photo: ' + JSON.stringify(bp));
+    for (const c of [belt, 'ACC-0090', 'ACC-0091']) await call('DELETE', '/api/items/' + c);
     r = await call('POST', '/api/items/COST-0040/copies', { codes: ['COST-0042'] });
     ok(r.s === 400 && /already has details/.test(r.j.error), 'never overwrites an item that already has details');
     await call('DELETE', '/api/items/COST-0041'); await call('DELETE', '/api/items/COST-0042');

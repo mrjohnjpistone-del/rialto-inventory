@@ -360,8 +360,8 @@
       '<dt>Last seen</dt><dd>' + esc(when(it.last_seen) || '—') + '</dd>' +
       '</dl><div class="row" style="margin-top:14px"><button class="btn alt" id="ed">Edit details</button>' +
       (it.status !== 'Missing' ? '<button class="btn alt" id="ms">Can\'t find it</button>' : '') + '</div></div>' +
-      '<div class="card"><h3>More just like this one?</h3><p class="muted small">Each copy gets its own sticker and QR code. Details carry over; take each one\'s own photo.</p>' +
-      '<div class="row"><button class="btn" id="cpy">⌗ Copy to next sticker</button><button class="btn alt" id="cpyN">Make several copies</button></div></div>' +
+      '<div class="card"><h3>More just like this one?</h3><p class="muted small">Identical items (ten green web belts)? Tap <b>Scan stickers to copy</b> and scan each one\'s sticker: each gets these details' + (it.photos.length ? ' and this photo' : '') + '. No new photos, no typing.</p>' +
+      '<div class="row"><button class="btn" id="cpy">⌗ Scan stickers to copy</button><button class="btn alt" id="cpyN">Make several copies</button></div></div>' +
       '<div class="card"><div class="qrbox">' + qrSvg(qrUrl(it.code)) + '<div><b>Sticker</b><p class="muted small" style="margin:.3em 0 .6em">Lost or damaged sticker? Print a new one.</p>' +
       '<div class="row"><button class="btn alt sm" id="pr">Print sticker</button><button class="btn alt sm" id="rc">Wrong department?</button></div></div></div></div>' +
       '<div class="card"><h3>History</h3><ul class="hist">' + it.history.map((h) => '<li><b>' + esc(h.action) + '</b>' + (h.detail ? ' — ' + esc(h.detail) : '') + '<br><span class="muted small">' + esc(h.by) + ' · ' + esc(when(h.at)) + '</span></li>').join('') + '</ul></div>' +
@@ -743,7 +743,7 @@
     });
   }
   function copyToSticker(it) {
-    openScanner({ mode: 'copy', from: it, prompt: 'Scan the BLANK sticker on the next one' });
+    openScanner({ mode: 'copy', from: it, prompt: 'Scan each matching sticker, one after another' + (it.photos.length ? ' (they share this photo)' : ''), onClose: () => render(true) });
   }
   // Most of the time the twins already wear a printed sticker (often with a phone photo and "Details needed").
   // So the dialog leads with "copy onto stickers we already have"; new sticker numbers are the second choice.
@@ -768,6 +768,7 @@
           (p.photos[0] ? '<img src="/p/' + p.photos[0] + '_t.jpg" style="width:56px;height:56px;object-fit:cover;border-radius:8px">' : '') +
           '<span class="code">' + esc(p.code) + '</span></label>').join('') + '</div>' : '') +
       '<label>' + (pend.length ? 'Or type' : 'Type') + ' the sticker numbers<input id="ct" placeholder="e.g. cost45, cost46  or  cost45-50" autocapitalize="characters"></label>' +
+      (it.photos.length ? '<label class="check" style="margin:4px 0 12px"><input type="checkbox" id="cph" checked> Use this photo on the ones that have no photo yet</label>' : '') +
       '<button class="btn big">Copy details onto these</button></form>' +
       '<hr style="border:0;border-top:1px solid var(--line);margin:18px 0">' +
       '<details><summary style="font-weight:700;cursor:pointer">No stickers on them yet? Make new sticker numbers</summary><div style="margin-top:10px">' +
@@ -782,7 +783,7 @@
         const codes = [...new Set($$('.pc', m).filter((c) => c.checked).map((c) => c.value).concat(parseCodeList($('#ct', m).value)))];
         if (!codes.length) return toast('Tick or type at least one sticker number.', 'bad');
         try {
-          const r = await api('POST', '/api/items/' + it.code + '/copies', { codes });
+          const r = await api('POST', '/api/items/' + it.code + '/copies', { codes, photo: !!($('#cph', m) && $('#cph', m).checked) });
           r.items.forEach(upsert); close();
           modal('<h2>Copied onto ' + r.items.length + ' item' + (r.items.length === 1 ? '' : 's') + ' ✓</h2>' +
             '<p>' + r.items.map((x) => '<a class="code" href="/i/' + esc(x.code) + '" data-nav>' + esc(x.code) + '</a>').join(' ') + '</p>' +
@@ -995,14 +996,13 @@
       if (o.mode === 'copy') {
         if (r.kind === 'loc') { msg.textContent = 'That is a place sticker. Scan a blank item sticker.'; return; }
         const used = item(r.code);
-        if (used && used.needs_details) {
-          try { const x = await api('POST', '/api/items/' + o.from.code + '/copies', { codes: [r.code] }); x.items.forEach(upsert);
-            add('✓ ' + esc(r.code) + ' now ' + esc(o.from.name), 'ok'); msg.textContent = 'Done. Scan the next one, or tap Done.'; }
-          catch (er) { msg.textContent = er.message; }
-          return;
-        }
-        if (used) { msg.textContent = r.code + ' is already on "' + used.name + '". Scan a BLANK sticker.'; return; }
-        closeScanner(); go('/i/' + r.code + '?copy=' + o.from.code); return;
+        if (r.code === o.from.code) { msg.textContent = 'That is the one you are copying. Scan the next one.'; return; }
+        if (used && !used.needs_details) { msg.textContent = r.code + ' is already "' + used.name + '". Scan a blank sticker.'; return; }
+        try { const x = await api('POST', '/api/items/' + o.from.code + '/copies', { codes: [r.code], photo: true }); x.items.forEach(upsert);
+          o.n = (o.n || 0) + 1; add('✓ ' + esc(r.code) + ' — ' + esc(o.from.name), 'ok');
+          msg.textContent = o.n + ' done. Scan the next one, or tap Done.'; }
+        catch (er) { msg.textContent = er.message; }
+        return;
       }
       if (o.mode === 'pickLoc') {
         if (r.kind !== 'loc') { msg.textContent = 'That is an item sticker — scan the shelf/bin sticker.'; return; }

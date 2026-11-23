@@ -940,6 +940,8 @@ const server = http.createServer(async (req, res) => {
               created_at: now, created_by: by, last_seen: now };
             COPY.forEach((f) => { c[f] = item[f] == null ? '' : clone(item[f]); });
             c.category = dept.name; delete c.needs_details; c.updated_at = now; c.updated_by = by;
+            // One generic photo for identical items (ten green web belts): share it with any that have none.
+            if (b.photo && !c.photos.length && item.photos.length) c.photos = item.photos.slice(0, 4);
             log(c, by, ex ? 'Details added' : 'Added', 'copied from ' + item.code);
             if (!ex) { bumpPastCode(code); store.items.push(c); }
             made.push(c);
