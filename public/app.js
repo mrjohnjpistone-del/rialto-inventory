@@ -78,6 +78,9 @@
   const ORG = () => (D.settings && D.settings.org) || 'Bold Theatre';
   const ownerOf = (i) => (i.owner || '').trim() || ORG();
   const notOurs = (i) => ownerOf(i).toLowerCase() !== ORG().toLowerCase();
+  // "For sale $40 · For rent $15 / week · Can loan out (free, program credit)"
+  const availText = (i) => [i.for_sale ? 'For sale' + (i.sale_price ? ' ' + i.sale_price : '') : '', i.for_rent ? 'For rent' + (i.rent_rate ? ' ' + i.rent_rate : '') : '',
+    i.for_loan ? 'Can loan out' + (i.loan_terms ? ' (' + i.loan_terms + ')' : '') : ''].filter(Boolean).join(' · ');
   const ACQ = ['Purchased', 'Donated', 'Made by us', 'Loaned to us', 'Rented', "Venue's property", 'Other'];
   const mustReturn = (i) => i.acquired === 'Loaned to us' || i.acquired === 'Rented';
   const todayStr = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
@@ -172,7 +175,7 @@
     return '<a class="it" href="/i/' + esc(it.code) + '" data-nav>' + thumb(it) + '<div class="bd"><div class="nm">' + chip(it.code) + ' ' + esc(it.name) + '</div><div class="mt">' + esc(meta) + (it.size ? ' · ' + esc(it.size) : '') + '</div>' +
       (activeTemp(it).length ? '<div class="mt" style="color:var(--warn);font-weight:700">✂ temporary alteration to undo</div>' : '') +
       ((it.links || []).length ? '<div class="mt">🔗 goes with ' + esc(it.links.join(', ')) + '</div>' : '') +
-      (it.for_sale || it.for_rent ? '<div class="mt" style="color:var(--ok);font-weight:700">' + esc([it.for_sale ? 'For sale' + (it.sale_price ? ' ' + it.sale_price : '') : '', it.for_rent ? 'For rent' + (it.rent_rate ? ' ' + it.rent_rate : '') : ''].filter(Boolean).join(' · ')) + '</div>' : '') +
+      (availText(it) ? '<div class="mt" style="color:var(--ok);font-weight:700">' + esc(availText(it)) + '</div>' : '') +
       (notOurs(it) || mustReturn(it) ? '<div class="mt" style="color:var(--bad);font-weight:700">' + esc([notOurs(it) ? 'Owned by ' + ownerOf(it) : '', mustReturn(it) ? it.acquired + (it.return_by ? ' · return by ' + it.return_by : '') : ''].filter(Boolean).join(' · ')) + (overdue(it) ? ' — OVERDUE' : '') + '</div>' : '') +
       (extra || '') + '</div>' + pill(it.status) + '</a>';
   }
@@ -300,7 +303,7 @@
       '<select id="fp">' + opts([['none', 'No photo'], ['has', 'Has photo']], st.photo, 'Photos: any') + '</select>' +
       '<select id="ffit">' + opts(FITS.map((f) => [f, f]), st.fit, "Men's / Women's / Unisex / Children's") + '</select>' +
       '<select id="fown">' + opts([['__ours', 'Ours (' + ORG() + ')'], ['__notours', 'Not ours (anyone else)']].concat(ownerList().filter((o) => o !== ORG()).map((o) => [o, o])), st.own, 'Owner: anyone') + '</select>' +
-      '<select id="facq">' + opts([['__sale', 'For sale'], ['__rent', 'For rent'], ['__return', 'Must go back (loaned / rented)'], ['__overdue', 'Overdue to return']].concat(ACQ.map((a) => [a, a])), st.acq, 'How we have it: any') + '</select>' +
+      '<select id="facq">' + opts([['__sale', 'For sale'], ['__rent', 'For rent'], ['__loan', 'Can loan out'], ['__return', 'Must go back (loaned / rented)'], ['__overdue', 'Overdue to return']].concat(ACQ.map((a) => [a, a])), st.acq, 'How we have it: any') + '</select>' +
       '<select id="falt">' + opts([['undo', 'Temporary — to undo'], ['any', 'Any alteration'], ['perm', 'Permanently altered']], st.alt, 'Alterations: any') + '</select>' +
       '<select id="fdt">' + opts([['need', 'Needs details']], st.details, 'Details: any') + '</select>' +
       '<select id="fo">' + opts([['name', 'A → Z'], ['new', 'Newest'], ['updated', 'Recently changed'], ['code', 'Sticker code']], st.sort) + '</select>' +
@@ -328,6 +331,7 @@
         if (st.fit && !(i.fit || []).includes(st.fit)) return false;
         if (st.acq === '__sale' && !i.for_sale) return false;
         if (st.acq === '__rent' && !i.for_rent) return false;
+        if (st.acq === '__loan' && !i.for_loan) return false;
         if (st.acq === '__return' && !mustReturn(i)) return false;
         if (st.acq === '__overdue' && !overdue(i)) return false;
         if (st.acq && st.acq[0] !== '_' && i.acquired !== st.acq) return false;
@@ -338,7 +342,7 @@
         if (st.alt === 'any' && !(i.alterations || []).length) return false;
         if (st.alt === 'perm' && !(i.alterations || []).some((a) => a.kind === 'Permanent')) return false;
         if (!words.length) return true;
-        const hay = [i.code, i.name, i.category, i.color, i.size, (i.fit || []).join(' '), ownerOf(i), i.acquired || '', i.source || '', i.for_sale ? 'for sale' : '', i.for_rent ? 'for rent rental' : '', (i.alterations || []).map((a) => a.what + ' ' + a.show).join(' '), i.period, i.tags, i.description, i.notes, i.holder, i.show, locName(i.location), i.sublocation, i.condition,
+        const hay = [i.code, i.name, i.category, i.color, i.size, (i.fit || []).join(' '), ownerOf(i), i.acquired || '', i.source || '', i.for_sale ? 'for sale' : '', i.for_rent ? 'for rent rental' : '', i.for_loan ? 'loan out lend' : '', (i.alterations || []).map((a) => a.what + ' ' + a.show).join(' '), i.period, i.tags, i.description, i.notes, i.holder, i.show, locName(i.location), i.sublocation, i.condition,
           (i.roles || []).map((r) => r.show + ' ' + r.character).join(' ')].join(' ').toLowerCase();
         return words.every((w) => hay.includes(w));
       });
@@ -358,7 +362,7 @@
   }
 
   // Fields that carry over when one item is copied to the next sticker (never photos, status or holder).
-  const COPY_FIELDS = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'owner', 'acquired', 'source', 'for_sale', 'sale_price', 'for_rent', 'rent_rate', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
+  const COPY_FIELDS = ['name', 'category', 'qty', 'location', 'sublocation', 'color', 'size', 'fit', 'owner', 'acquired', 'source', 'for_sale', 'sale_price', 'for_rent', 'rent_rate', 'for_loan', 'loan_terms', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'roles'];
   function copyOf() { const c = new URLSearchParams(location.search).get('copy'); return c ? item(c.toUpperCase()) : null; }
 
   // ── Item page ──────────────────────────────────────────────────────────────
@@ -432,7 +436,7 @@
       '<dt>Department</dt><dd>' + esc(it.category) + (deptOf(it.code) && deptOf(it.code).room ? ' <span class="muted">· ' + esc(deptOf(it.code).room) + '</span>' : '') + '</dd>' +
       (it.condition ? '<dt>Condition</dt><dd>' + esc(it.condition) + '</dd>' : '') +
       (it.color ? '<dt>Color</dt><dd>' + esc(it.color) + '</dd>' : '') +
-      (it.for_sale || it.for_rent ? '<dt>Available</dt><dd><b style="color:var(--ok)">' + esc([it.for_sale ? 'For sale' + (it.sale_price ? ' ' + it.sale_price : '') : '', it.for_rent ? 'For rent' + (it.rent_rate ? ' ' + it.rent_rate : '') : ''].filter(Boolean).join(' · ')) + '</b></dd>' : '') +
+      (availText(it) ? '<dt>Available</dt><dd><b style="color:var(--ok)">' + esc(availText(it)) + '</b></dd>' : '') +
       (it.acquired ? '<dt>How we have it</dt><dd>' + (overdue(it) ? '<b style="color:var(--bad)">' + esc(acqLine(it)) + ' — OVERDUE</b>' : esc(acqLine(it))) + '</dd>' : '') +
       '<dt>Owner</dt><dd>' + (notOurs(it) ? '<b style="color:var(--bad)">' + esc(ownerOf(it)) + '</b> <span class="muted small">— not ours</span>' : esc(ownerOf(it))) + '</dd>' +
       (it.size ? '<dt>Size</dt><dd>' + esc(it.size) + '</dd>' : '') +
@@ -478,10 +482,11 @@
     $('#cpy').onclick = () => copyToSticker(it);
     $('#altAdd').onclick = () => alterForm(it);
     $('#slSave').onclick = async () => {
-      const b = { for_sale: $('#sl_sale').checked, sale_price: $('#sl_price').value.trim(), for_rent: $('#sl_rent').checked, rent_rate: $('#sl_rate').value.trim() };
+      const b = { for_sale: $('#sl_sale').checked, sale_price: $('#sl_price').value.trim(), for_rent: $('#sl_rent').checked, rent_rate: $('#sl_rate').value.trim(), for_loan: $('#sl_loan').checked, loan_terms: $('#sl_terms').value.trim() };
       if (b.sale_price && !b.for_sale) b.for_sale = true;
       if (b.rent_rate && !b.for_rent) b.for_rent = true;
-      try { const r = await api('PATCH', '/api/items/' + it.code, b); upsert(r.item); toast('Sale / rental saved', 'good'); render(true); } catch (e) { toast(e.message, 'bad'); }
+      if (b.loan_terms && !b.for_loan) b.for_loan = true;
+      try { const r = await api('PATCH', '/api/items/' + it.code, b); upsert(r.item); toast('Saved', 'good'); render(true); } catch (e) { toast(e.message, 'bad'); }
     };
     $('#lnAdd').onclick = () => linkPiece(it);
     $$('[data-unlink]').forEach((b) => b.onclick = async () => {
@@ -572,12 +577,14 @@
   }
   // ── For sale / rental (always visible on the item page) ────────────────────
   function saleCard(it) {
-    return '<div class="card"><h3 style="margin:0 0 10px">💲 For sale / rental</h3>' +
+    return '<div class="card"><h3 style="margin:0 0 10px">💲 For sale / rent / loan out</h3>' +
       '<div class="grid2"><div><label class="check"><input type="checkbox" id="sl_sale"' + (it.for_sale ? ' checked' : '') + '> For sale</label>' +
         '<input id="sl_price" placeholder="Sale price, e.g. $40" value="' + esc(it.sale_price || '') + '" style="margin-top:6px"></div>' +
       '<div><label class="check"><input type="checkbox" id="sl_rent"' + (it.for_rent ? ' checked' : '') + '> For rent</label>' +
         '<input id="sl_rate" placeholder="Rental rate, e.g. $15 / week" value="' + esc(it.rent_rate || '') + '" style="margin-top:6px"></div></div>' +
-      '<button class="btn sm" id="slSave" style="margin-top:10px">Save sale / rental</button></div>';
+      '<div style="margin-top:10px"><label class="check"><input type="checkbox" id="sl_loan"' + (it.for_loan ? ' checked' : '') + '> Can loan out</label>' +
+        '<input id="sl_terms" placeholder="Loan terms, e.g. free for program credit" value="' + esc(it.loan_terms || '') + '" style="margin-top:6px"></div>' +
+      '<button class="btn sm" id="slSave" style="margin-top:10px">Save</button></div>';
   }
   // ── Pieces that go together (desk + topper) ────────────────────────────────
   const linked = (it) => (it.links || []).map(item).filter(Boolean);
@@ -854,9 +861,10 @@
       '<div class="grid2"><label>How we have it<select id="f_acquired">' + opts(ACQ.map((a) => [a, a]), v.acquired || '', '—') + '</select></label>' +
       '<label>From / donated by<input id="f_source" placeholder="person, company, store" value="' + esc(v.source || '') + '"></label></div>' +
       '<label id="rbl" style="display:' + (mustReturn(v) ? 'block' : 'none') + '">Return by <span class="muted small">(pick the date)</span><input id="f_return_by" type="date" value="' + esc(v.return_by || '') + '"></label>' +
-      '<fieldset class="fits"><legend>For sale / rental <span class="muted small">(to other companies or the public)</span></legend>' +
+      '<fieldset class="fits"><legend>For sale / rent / loan out <span class="muted small">(to other companies or the public)</span></legend>' +
         '<div class="grid2" style="width:100%"><div><label class="check"><input type="checkbox" id="f_for_sale"' + (v.for_sale ? ' checked' : '') + '> For sale</label><input id="f_sale_price" placeholder="Price, e.g. $40" value="' + esc(v.sale_price || '') + '" style="margin-top:6px"></div>' +
-        '<div><label class="check"><input type="checkbox" id="f_for_rent"' + (v.for_rent ? ' checked' : '') + '> For rent</label><input id="f_rent_rate" placeholder="Rate, e.g. $15 / week" value="' + esc(v.rent_rate || '') + '" style="margin-top:6px"></div></div></fieldset>' +
+        '<div><label class="check"><input type="checkbox" id="f_for_rent"' + (v.for_rent ? ' checked' : '') + '> For rent</label><input id="f_rent_rate" placeholder="Rate, e.g. $15 / week" value="' + esc(v.rent_rate || '') + '" style="margin-top:6px"></div></div>' +
+        '<div style="width:100%;margin-top:8px"><label class="check"><input type="checkbox" id="f_for_loan"' + (v.for_loan ? ' checked' : '') + '> Can loan out</label><input id="f_loan_terms" placeholder="Terms, e.g. free for program credit" value="' + esc(v.loan_terms || '') + '" style="margin-top:6px"></div></fieldset>' +
       bookHtml(v) +
       rolesHtml(v.roles) +
       '<details' + (v.color || v.size || v.period || v.notes || v.description || v.tags || v.value || v.condition || v.sublocation ? ' open' : '') + '><summary style="font-weight:700;margin:4px 0 12px;cursor:pointer">More details (optional)</summary>' +
@@ -950,10 +958,10 @@
   }
   function readFields(root) {
     const o = {};
-    ['for_sale', 'for_rent'].forEach((k) => { const el = $('#f_' + k, root); if (el) o[k] = el.checked; });
+    ['for_sale', 'for_rent', 'for_loan'].forEach((k) => { const el = $('#f_' + k, root); if (el) o[k] = el.checked; });
     if ($('.fits', root)) o.fit = $$('.f_fit', root).filter((c) => c.checked).map((c) => c.value);
     if ($('#roles', root)) { o.roles = readRoles(root); const s = o.roles.find((r) => r.show); if (s) LS.set('lastShowRole', s.show); }
-    ['name', 'category', 'qty', 'location', 'owner', 'acquired', 'source', 'return_by', 'sale_price', 'rent_rate', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'status'].forEach((k) => {
+    ['name', 'category', 'qty', 'location', 'owner', 'acquired', 'source', 'return_by', 'sale_price', 'rent_rate', 'loan_terms', 'sublocation', 'color', 'size', 'period', 'condition', 'tags', 'description', 'notes', 'value', 'status'].forEach((k) => {
       const el = $('#f_' + k, root); if (el) o[k] = el.value;
     });
     return o;

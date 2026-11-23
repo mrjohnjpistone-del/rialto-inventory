@@ -407,7 +407,7 @@ function log(item, by, action, detail) {
 }
 const FITS = ["Men's", "Women's", "Unisex", "Children's"];
 const ACQUIRED = ['Purchased', 'Donated', 'Made by us', 'Loaned to us', 'Rented', "Venue's property", 'Other'];
-const TEXT_FIELDS = { owner: 120, acquired: 30, source: 120, return_by: 20, sale_price: 20, rent_rate: 40, name: 120, category: 60, description: 1500, color: 60, size: 60, period: 80,
+const TEXT_FIELDS = { owner: 120, acquired: 30, source: 120, return_by: 20, sale_price: 20, rent_rate: 40, loan_terms: 80, name: 120, category: 60, description: 1500, color: 60, size: 60, period: 80,
   tags: 200, notes: 1500, holder: 80, show: 120, due: 20, location: 12, sublocation: 80, condition: 30, status: 30 };
 function applyFields(item, b) {
   const changed = [];
@@ -427,7 +427,7 @@ function applyFields(item, b) {
     const q = num(b.qty, 0, 100000, 1); if (item.qty !== q) { item.qty = q; changed.push('qty'); }
   }
   // Available to the public: for sale and/or for rent (flags; price and rate are text fields).
-  for (const f of ['for_sale', 'for_rent']) {
+  for (const f of ['for_sale', 'for_rent', 'for_loan']) {
     if (!Object.prototype.hasOwnProperty.call(b, f)) continue;
     const v = b[f] === true || b[f] === 'true' || b[f] === 1 || b[f] === 'on';
     if (!!item[f] !== v) { item[f] = v; changed.push(f.replace('_', ' ')); }
@@ -810,13 +810,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === 'GET' && p === '/api/export.csv') {
-      const cols = ['code', 'name', 'category', 'characters', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'fit', 'period', 'tags', 'value', 'owner', 'acquired', 'source', 'return_by', 'for_sale', 'sale_price', 'for_rent', 'rent_rate', 'alterations', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
+      const cols = ['code', 'name', 'category', 'characters', 'qty', 'status', 'condition', 'location', 'location_name', 'sublocation', 'color', 'size', 'fit', 'period', 'tags', 'value', 'owner', 'acquired', 'source', 'return_by', 'for_sale', 'sale_price', 'for_rent', 'rent_rate', 'for_loan', 'loan_terms', 'alterations', 'holder', 'show', 'due', 'description', 'notes', 'photos', 'last_seen', 'updated_at', 'updated_by'];
       const q = (v) => { let t = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
       const base = baseUrl(req);
       const rows = store.items.map((i) => cols.map((c) => c === 'location_name' ? ((findLoc(i.location) || {}).name || '') :
         c === 'characters' ? (i.roles || []).map((r) => (r.show ? r.show + ': ' : '') + r.character).join('; ') :
         c === 'owner' ? (i.owner || store.settings.org || '') :
-        c === 'for_sale' || c === 'for_rent' ? (i[c] ? 'yes' : '') :
+        c === 'for_sale' || c === 'for_rent' || c === 'for_loan' ? (i[c] ? 'yes' : '') :
         c === 'fit' ? (i.fit || []).join('; ') :
         c === 'alterations' ? (i.alterations || []).map((a) => a.kind + (a.status === 'Undone' ? ' (undone)' : '') + ': ' + a.what + (a.show ? ' [' + a.show + ']' : '')).join('; ') :
         c === 'photos' ? i.photos.map((x) => base + '/p/' + x + '.jpg').join(' ') : i[c]).map(q).join(','));
