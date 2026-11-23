@@ -514,11 +514,16 @@
     });
   }
   function pickSame(list, onPick) {
-    const rows = list.slice().sort((a, b) => a.name.localeCompare(b.name) || a.code.localeCompare(b.code, undefined, { numeric: true }));
+    const seen = new Map();   // 7 identical belts show as one row "×7"
+    list.slice().sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true })).forEach((i) => {
+      const k = [i.name, i.size, i.color].join('|').toLowerCase();
+      if (seen.has(k)) seen.get(k).n++; else seen.set(k, { i, n: 1 });
+    });
+    const rows = [...seen.values()].map((x) => Object.assign({}, x.i, { _n: x.n })).sort((a, b) => a.name.localeCompare(b.name));
     const draw = (q) => { const w = q.toLowerCase().split(/\s+/).filter(Boolean);
       return rows.filter((i) => w.every((x) => (i.name + ' ' + i.size + ' ' + i.color + ' ' + i.code + ' ' + i.tags).toLowerCase().includes(x))).slice(0, 80)
         .map((i) => '<button type="button" class="it" data-same="' + esc(i.code) + '" style="width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);cursor:pointer">' + thumb(i) +
-          '<div class="bd"><div class="nm">' + esc(i.name) + '</div><div class="mt">' + esc([i.size, i.color, i.code].filter(Boolean).join(' · ')) + '</div></div></button>').join('') || '<p class="muted">No match.</p>'; };
+          '<div class="bd"><div class="nm">' + esc(i.name) + '</div><div class="mt">' + esc([i.size, i.color, i._n > 1 ? '×' + i._n + ' in stock' : i.code].filter(Boolean).join(' · ')) + '</div></div></button>').join('') || '<p class="muted">No match.</p>'; };
     modal('<h2>Which item is it the same as?</h2><input id="sq" type="search" placeholder="Search: tie, khaki, 15½…" style="margin-bottom:8px"><div id="sl" style="max-height:55vh;overflow:auto">' + draw('') + '</div>' +
       '<button type="button" class="btn alt big" data-close style="margin-top:10px">Cancel</button>',
     (m, close) => {
