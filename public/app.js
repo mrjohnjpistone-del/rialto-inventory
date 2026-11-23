@@ -258,7 +258,7 @@
       '<select id="fdt">' + opts([['need', 'Needs details']], st.details, 'Details: any') + '</select>' +
       '<select id="fo">' + opts([['name', 'A → Z'], ['new', 'Newest'], ['updated', 'Recently changed'], ['code', 'Sticker code']], st.sort) + '</select>' +
       '</div><div id="showHit"></div><p class="muted small" id="cnt"></p><div class="list" id="res"></div>' +
-      '<div class="row" style="margin-top:14px"><button class="btn alt" id="printRes">Print stickers for these</button><a class="btn alt" href="/api/export.csv">Download spreadsheet</a></div>';
+      '<div class="row" style="margin-top:14px"><button class="btn alt" id="printRes">Print stickers for these</button><button class="btn alt" id="moveRes">Move these into a place…</button><a class="btn alt" href="/api/export.csv">Download spreadsheet</a></div>';
     const sync = () => {
       st.q = $('#bq').value; st.cat = $('#fc').value; st.status = $('#fs').value; st.loc = $('#fl').value; st.photo = $('#fp').value; st.details = $('#fdt').value; st.fit = $('#ffit').value; st.alt = $('#falt').value; st.sort = $('#fo').value; LS.set('sort', st.sort);
       const u = new URLSearchParams(); Object.entries(st).forEach(([k, v]) => { if (v && k !== 'sort') u.set(k, v); });
@@ -266,6 +266,8 @@
     };
     $('#bq').addEventListener('keydown', (e) => { if (e.key === 'Enter') { const c = codeTarget(e.target.value); if (c) { e.preventDefault(); go(c); } } });
     $('#bq').addEventListener('input', sync); $$('.filters select').forEach((s) => s.addEventListener('change', sync));
+    $('#moveRes').onclick = () => { const c = filtered().map((i) => i.code); if (!c.length) return toast('No items to move.');
+      pickPlace('Move these ' + c.length + ' item' + (c.length === 1 ? '' : 's') + ' into…', async (dest) => { try { await moveMany(c, dest); draw(); } catch (er) { toast(er.message, 'bad'); } }); };
     $('#printRes').onclick = () => { const c = filtered().map((i) => i.code); if (!c.length) return toast('No items to print.'); printCodes(c); };
     function filtered() {
       const words = st.q.toLowerCase().split(/\s+/).filter(Boolean);
@@ -532,6 +534,45 @@
     (m, close) => {
       const wire = () => $$('[data-same]', m).forEach((b) => b.onclick = () => { close(); onPick(item(b.dataset.same)); });
       $('#sq', m).oninput = (e) => { $('#sl', m).innerHTML = draw(e.target.value); wire(); }; wire();
+    });
+  }
+  // ── Moving many at once ────────────────────────────────────────────────────
+  async function moveMany(codes, dest) {
+    const r = await api('POST', '/api/move', { codes, location: dest }); (r.items || []).forEach(upsert);
+    toast(r.moved + ' item' + (r.moved === 1 ? '' : 's') + ' moved into ' + locName(dest) + ' ✓', 'good'); return r;
+  }
+  function pickPlace(title, onPick) {
+    modal('<h2>' + esc(title) + '</h2><label>Place<select id="pp2">' + opts(D.locations.slice().sort((a, b) => locPath(a.code).localeCompare(locPath(b.code))).map((x) => [x.code, locPath(x.code)]), LS.get('lastMoveTo', ''), 'Pick a place') + '</select></label>' +
+      '<button class="btn big" id="ppOk">Move them</button><button class="btn alt big" id="ppScan" style="margin-top:8px">⌗ Scan the bag / bin / shelf sticker</button><button class="btn alt big" data-close style="margin-top:8px">Cancel</button>',
+    (m, close) => {
+      $('#ppOk', m).onclick = () => { const v = $('#pp2', m).value; if (!v) return toast('Pick a place.', 'bad'); LS.set('lastMoveTo', v); close(); onPick(v); };
+      $('#ppScan', m).onclick = () => { close(); openScanner({ mode: 'pickLoc', prompt: 'Scan the bag / bin / shelf sticker', onLoc: (x) => { LS.set('lastMoveTo', x.code); onPick(x.code); } }); };
+    });
+  }
+  function pickItemsInto(l) {
+    const seen = new Map();   // identical items (7 khaki belts) collapse to one tickable row
+    D.items.filter((i) => i.location !== l.code).forEach((i) => {
+      const k = [i.name, i.size, i.color].join('|').toLowerCase();
+      if (!seen.has(k)) seen.set(k, { i, codes: [] }); seen.get(k).codes.push(i.code);
+    });
+    const rows = [...seen.values()].sort((a, b) => a.i.name.localeCompare(b.i.name));
+    const draw = (q) => { const w = q.toLowerCase().split(/\s+/).filter(Boolean);
+      return rows.map((x, n) => ({ x, n })).filter(({ x }) => w.every((s) => (x.i.name + ' ' + x.i.size + ' ' + x.i.color + ' ' + x.i.tags + ' ' + x.codes.join(' ')).toLowerCase().includes(s))).slice(0, 150)
+        .map(({ x, n }) => '<label class="check" style="margin:0;padding:8px 0;border-bottom:1px solid var(--line);font-weight:500"><input type="checkbox" class="mi" value="' + n + '">' + thumb(x.i) +
+          '<span><b>' + esc(x.i.name) + '</b>' + (x.codes.length > 1 ? ' <span class="chip">×' + x.codes.length + '</span>' : '') + '<br><span class="muted small">' + esc([x.i.size, x.i.color, x.i.location ? 'now in ' + locPath(x.i.location) : 'no place yet'].filter(Boolean).join(' · ')) + '</span></span></label>').join('') || '<p class="muted">No match.</p>'; };
+    modal('<h2>Put items into ' + esc(l.name) + '</h2><input id="mq" type="search" placeholder="Search: belt, tie, khaki…" style="margin-bottom:6px">' +
+      '<label class="check" style="margin:0 0 6px"><input type="checkbox" id="miAll"> Tick everything shown</label><div id="ml" style="max-height:50vh;overflow:auto">' + draw('') + '</div>' +
+      '<button class="btn big" id="miGo" style="margin-top:10px">Move ticked items in</button><button class="btn alt big" data-close style="margin-top:8px">Cancel</button>',
+    (m, close) => {
+      const keep = new Set();
+      const wire = () => $$('.mi', m).forEach((c) => { c.checked = keep.has(+c.value); c.onchange = () => (c.checked ? keep.add(+c.value) : keep.delete(+c.value)); });
+      $('#mq', m).oninput = (e) => { $('#ml', m).innerHTML = draw(e.target.value); $('#miAll', m).checked = false; wire(); };
+      $('#miAll', m).onchange = (e) => $$('.mi', m).forEach((c) => { c.checked = e.target.checked; c.onchange(); });
+      $('#miGo', m).onclick = async () => {
+        const codes = [...keep].flatMap((n) => rows[n].codes); if (!codes.length) return toast('Tick at least one.', 'bad');
+        try { await moveMany(codes, l.code); close(); render(true); } catch (er) { toast(er.message, 'bad'); }
+      };
+      wire();
     });
   }
   function tagNote(t) {
@@ -1054,7 +1095,7 @@
     view.innerHTML = '<span class="code muted">' + esc(l.code) + '</span><h1>' + esc(l.name) + '</h1>' + (l.area ? '<p class="muted">' + esc(l.area) + '</p>' : '') +
       '<div class="row" style="margin-bottom:14px"><a class="btn" href="/audit/' + esc(code) + '" data-nav>Audit this place</a><button class="btn blue" id="put">Put items here</button></div>' +
       '<p class="muted small" style="margin:-6px 0 12px"><b>Put items here</b>: scan each item\'s sticker as it goes in, blank stickers too. Taking something out? Scan it into its new place, or use <b>Move it</b> on the item.</p>' +
-      '<div class="row" style="margin-bottom:14px"><a class="btn alt" href="/add" id="addHere">Add new item here</a><button class="btn alt" id="pl">Print sticker</button><button class="btn alt" onclick="window.print()">Print contents list</button><button class="btn alt" id="rn">Rename</button></div>' +
+      '<div class="row" style="margin-bottom:14px"><a class="btn alt" href="/add" id="addHere">Add new item here</a><button class="btn alt" id="pl">Print sticker</button><button class="btn alt" onclick="window.print()">Print contents list</button><button class="btn alt" id="pickIn">☰ Pick items from a list</button><button class="btn alt" id="addBag">＋ Bag / box inside this</button><button class="btn alt" id="rn">Rename</button></div>' +
       '<div class="card" style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap"><div><span class="muted small">WHERE ' + (/bin/i.test(l.name) ? 'THIS BIN' : 'THIS') + ' IS</span><br>' +
         (l.parent && loc(l.parent) ? '<a href="/l/' + esc(l.parent) + '" data-nav><b>' + esc(locPath(l.parent)) + '</b></a>' : '<b class="audit-miss">Not set yet</b>') + '</div>' +
         '<button class="btn sm" id="mvBin">' + (l.parent ? 'Move it' : 'Set where it is') + '</button></div>' +
@@ -1066,6 +1107,13 @@
       (D.role === 'admin' && !here.length ? '<button class="btn alt sm" id="dl" style="margin-top:16px;color:var(--bad)">Delete this place</button>' : '');
     $('#addHere').onclick = (e) => { e.preventDefault(); const st = LS.get('sticky', {}); st.location = code; LS.set('sticky', st); go('/add'); };
     $('#pl').onclick = () => printCodes([code], 'locations');
+    $('#pickIn').onclick = () => pickItemsInto(l);
+    $('#addBag').onclick = async () => {
+      const n = prompt('Name the bag or box going into ' + l.name + ' (e.g. "' + l.name + ' – Belt bag")', l.name + ' – '); if (!n || !n.trim() || n.trim() === l.name + ' –') return;
+      try { const r = await api('POST', '/api/locations', { name: n.trim(), area: l.area || '', parent: code }); D.locations.push(r.loc);
+        go('/l/' + r.loc.code); toast(r.loc.name + ' is inside ' + l.name + '. Print its stickers, then put items in.', 'good'); }
+      catch (er) { toast(er.message, 'bad'); }
+    };
     $('#mvBin').onclick = () => modal('<h2>Where is ' + esc(l.name) + '?</h2><p class="muted small">Pick the shelf, rack or room it sits in, or scan that place\'s sticker.</p>' +
       '<label>Place<select id="bp">' + opts(D.locations.filter((x) => x.code !== code && !inPlace(x.code, code)).sort((a, b) => a.name.localeCompare(b.name)).map((x) => [x.code, locPath(x.code)]), l.parent || '', '— Not inside another place —') + '</select></label>' +
       '<button class="btn big" id="bpOk">Save</button><button class="btn alt big" id="bpScan" style="margin-top:8px">⌗ Scan the shelf / room sticker</button><button class="btn alt big" data-close style="margin-top:8px">Cancel</button>',

@@ -202,6 +202,15 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     ok(r.s === 400, 'a bin cannot be inside itself');
     r = await call('DELETE', '/api/locations/' + shelf);
     ok(r.s === 409 || r.s === 403, 'a shelf that still holds a bin is not deleted');
+    // A bag inside the bin, and many items moved into it in one go
+    r = await call('POST', '/api/locations', { name: 'Bin 1 – Belt bag', parent: bin }); const bag = r.j.loc.code;
+    await call('POST', '/api/items', { code: 'ACC-0071', name: 'Khaki web belt', category: 'ACC' });
+    await call('POST', '/api/items', { code: 'ACC-0072', name: 'Khaki web belt', category: 'ACC' });
+    r = await call('POST', '/api/move', { codes: ['acc71', 'ACC-0072', 'NOPE-1'], location: bag });
+    ok(r.s === 200 && r.j.moved === 2 && r.j.items.every((i) => i.location === bag), 'two belts moved into the bag in one go');
+    r = await call('POST', '/api/move', { codes: ['ACC-0071'], location: 'LOC-9999' });
+    ok(r.s === 400, 'bulk move to an unknown place is refused');
+    await call('DELETE', '/api/items/ACC-0071'); await call('DELETE', '/api/items/ACC-0072');
     r = await call('POST', '/api/locations', { name: 'Bin 9', parent: shelf });
     ok(r.s === 200 && r.j.loc.parent === shelf, 'a new bin can be created already on its shelf');
 
