@@ -314,6 +314,22 @@
       view.innerHTML = '<div class="card"><h1>New sticker: <span class="code">' + esc(code) + '</span></h1><p>' +
         (src ? 'Copying from <b>' + esc(src.name) + '</b> (' + esc(src.code) + '). Check the details, take this one\'s photo, and save.' : 'This sticker is not on anything yet. Fill in the item it is stuck to.') + '</p></div>';
       if (!src) {
+        // Identical to something already in (the 20th khaki tie)? One tap: its details + its photo land on this sticker.
+        const dp = deptOf(code).p;
+        const same = D.items.filter((i) => i.code.split('-')[0] === dp && !i.needs_details && i.name !== 'Details needed');
+        const last = item(LS.get('lastSame', '')); const lastOk = last && last.code.split('-')[0] === dp && !last.needs_details;
+        if (same.length) view.insertAdjacentHTML('beforeend', '<div class="card" style="border:2px solid var(--blue)"><h2 style="margin-bottom:6px">Same as one we already have?</h2>' +
+          '<p class="muted small" style="margin-top:0">This sticker gets that item\'s details and photo. No new photo, no typing.</p>' +
+          (lastOk ? '<button class="btn big blue" id="sameLast" style="margin-bottom:8px">' + (last.photos[0] ? '<img src="/p/' + last.photos[0] + '_t.jpg" style="width:34px;height:34px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:8px">' : '') + 'Same as ' + esc(last.name) + (last.size ? ' · ' + esc(last.size) : '') + '</button>' : '') +
+          '<button class="btn big alt" id="samePick">📋 Pick the matching item…</button></div>');
+        const applySame = async (s) => {
+          try { const r = await api('POST', '/api/items/' + s.code + '/copies', { codes: [code], photo: true }); r.items.forEach(upsert);
+            LS.set('lastSame', s.code); editing = false; history.replaceState(null, '', '/i/' + code); render();
+            toast(code + ' is now ' + s.name + ' ✓  Scan the next sticker.', 'good'); }
+          catch (er) { toast(er.message, 'bad'); }
+        };
+        if ($('#sameLast')) $('#sameLast').onclick = () => applySame(last);
+        if ($('#samePick')) $('#samePick').onclick = () => pickSame(same, applySame);
         view.insertAdjacentHTML('beforeend', '<div class="card" style="border:2px solid var(--red)"><h2 style="margin-bottom:6px">On the phone? Just take the photo</h2>' +
           '<p class="muted small" style="margin-top:0">Saves this sticker with its photo. Type the details later on the computer (Home → <b>Need details</b>).</p>' +
           '<input type="file" id="poph" accept="image/*" capture="environment" hidden><button class="btn big" id="pob">📷 Photo only — details later</button></div>' +
@@ -495,6 +511,19 @@
           upsert(r.item); close(); render(true); toast('Alteration saved', 'good');
         } catch (er) { toast(er.message, 'bad'); }
       };
+    });
+  }
+  function pickSame(list, onPick) {
+    const rows = list.slice().sort((a, b) => a.name.localeCompare(b.name) || a.code.localeCompare(b.code, undefined, { numeric: true }));
+    const draw = (q) => { const w = q.toLowerCase().split(/\s+/).filter(Boolean);
+      return rows.filter((i) => w.every((x) => (i.name + ' ' + i.size + ' ' + i.color + ' ' + i.code + ' ' + i.tags).toLowerCase().includes(x))).slice(0, 80)
+        .map((i) => '<button type="button" class="it" data-same="' + esc(i.code) + '" style="width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);cursor:pointer">' + thumb(i) +
+          '<div class="bd"><div class="nm">' + esc(i.name) + '</div><div class="mt">' + esc([i.size, i.color, i.code].filter(Boolean).join(' · ')) + '</div></div></button>').join('') || '<p class="muted">No match.</p>'; };
+    modal('<h2>Which item is it the same as?</h2><input id="sq" type="search" placeholder="Search: tie, khaki, 15½…" style="margin-bottom:8px"><div id="sl" style="max-height:55vh;overflow:auto">' + draw('') + '</div>' +
+      '<button type="button" class="btn alt big" data-close style="margin-top:10px">Cancel</button>',
+    (m, close) => {
+      const wire = () => $$('[data-same]', m).forEach((b) => b.onclick = () => { close(); onPick(item(b.dataset.same)); });
+      $('#sq', m).oninput = (e) => { $('#sl', m).innerHTML = draw(e.target.value); wire(); }; wire();
     });
   }
   function tagNote(t) {
