@@ -208,6 +208,8 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     await call('POST', '/api/items', { code: 'ACC-0072', name: 'Khaki web belt', category: 'ACC' });
     r = await call('POST', '/api/move', { codes: ['acc71', 'ACC-0072', 'NOPE-1'], location: bag });
     ok(r.s === 200 && r.j.moved === 2 && r.j.items.every((i) => i.location === bag), 'two belts moved into the bag in one go');
+    r = await call('POST', '/api/move', { codes: ['ACC-0072'], out: true });
+    ok(r.s === 200 && r.j.moved === 1 && r.j.items[0].location === '', 'take an item out of a bin without saying where it goes (kept, no place)');
     r = await call('POST', '/api/move', { codes: ['ACC-0071'], location: 'LOC-9999' });
     ok(r.s === 400, 'bulk move to an unknown place is refused');
     await call('DELETE', '/api/items/ACC-0071'); await call('DELETE', '/api/items/ACC-0072');

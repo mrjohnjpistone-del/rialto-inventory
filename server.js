@@ -1106,14 +1106,17 @@ const server = http.createServer(async (req, res) => {
     // Move many items into one place at once (a bag of belts into the Belt bag, a pile into Bin 2).
     if (method === 'POST' && p === '/api/move') {
       const b = await readBody(req);
-      const dest = findLoc(String(b.location || '').toUpperCase()); if (!dest) return sendJson(res, 400, { error: 'Pick the place to move them to.' });
+      // out: true = take them out of wherever they are, without saying where they go (no place set).
+      const dest = b.out ? { code: '', name: '' } : findLoc(String(b.location || '').toUpperCase());
+      if (!dest) return sendJson(res, 400, { error: 'Pick the place to move them to.' });
       const codes = [...new Set((Array.isArray(b.codes) ? b.codes : []).slice(0, 500).map((c) => normCode(c)).filter(Boolean))];
       if (!codes.length) return sendJson(res, 400, { error: 'Pick at least one item.' });
       const now = new Date().toISOString(); const moved = [];
       for (const c of codes) {
         const item = findItem(c); if (!item || item.location === dest.code) continue;
-        item.location = dest.code; item.last_seen = now; item.updated_at = now; item.updated_by = by;
-        log(item, by, 'Moved', 'to ' + dest.name + (codes.length > 1 ? ' (with ' + (codes.length - 1) + ' others)' : ''));
+        const was = (findLoc(item.location) || {}).name || '';
+        item.location = dest.code; item.sublocation = dest.code ? item.sublocation : ''; item.last_seen = now; item.updated_at = now; item.updated_by = by;
+        log(item, by, dest.code ? 'Moved' : 'Taken out', (dest.code ? 'to ' + dest.name : (was ? 'of ' + was : '')) + (codes.length > 1 ? ' (with ' + (codes.length - 1) + ' others)' : ''));
         moved.push(item);
       }
       if (moved.length) { save(); moved.forEach((i) => broadcast({ t: 'item', item: itemOut(i) })); }

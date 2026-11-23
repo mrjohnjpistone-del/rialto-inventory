@@ -135,7 +135,8 @@
     let bar = document.getElementById('selbar');
     if (!SEL.size || !$$('.sel').length) { if (bar) bar.remove(); return; }
     if (!bar) { bar = document.createElement('div'); bar.id = 'selbar'; document.body.appendChild(bar); }
-    bar.innerHTML = '<b>' + SEL.size + ' selected</b><button class="btn sm" data-sa="move">Move to…</button><button class="btn alt sm" data-sa="print">Print stickers</button>' +
+    const onPlace = /^\/l\//i.test(location.pathname);
+    bar.innerHTML = '<b>' + SEL.size + ' selected</b>' + (onPlace ? '<button class="btn sm" data-sa="out">Take out</button>' : '') + '<button class="btn ' + (onPlace ? 'alt ' : '') + 'sm" data-sa="move">Move to…</button><button class="btn alt sm" data-sa="print">Print stickers</button>' +
       '<button class="btn alt sm" data-sa="all">Select all shown</button><button class="btn alt sm" data-sa="clear">Clear</button>';
   }
   document.addEventListener('change', (e) => {
@@ -147,6 +148,7 @@
     const a = b.dataset.sa, codes = [...SEL];
     if (a === 'clear') { SEL.clear(); $$('.sel').forEach((c) => { c.checked = false; }); selBar(); }
     else if (a === 'all') { $$('.sel').forEach((c) => { c.checked = true; SEL.add(c.value); }); selBar(); }
+    else if (a === 'out') takeOut(codes);
     else if (a === 'print') printCodes(codes.slice().sort((x, y) => x.localeCompare(y, undefined, { numeric: true })));
     else if (a === 'move') pickPlace('Move these ' + codes.length + ' item' + (codes.length === 1 ? '' : 's') + ' into…', async (dest) => {
       try { await moveMany(codes, dest); SEL.clear(); render(true); selBar(); } catch (er) { toast(er.message, 'bad'); } });
@@ -494,8 +496,10 @@
       '<button class="btn big" id="sc">⌗ Scan the shelf / bin sticker</button><p class="muted" style="text-align:center;margin:12px 0">or pick it</p>' +
       '<label>Place<select id="lc">' + locOpts(it.location) + '</select></label>' +
       '<label>Spot within it (optional)<input id="sub" placeholder="e.g. top shelf, left end" value="' + esc(it.sublocation || '') + '"></label>' +
-      '<button class="btn blue big" id="ok">Save place</button><button type="button" class="btn alt big" data-close style="margin-top:8px">Cancel</button>',
+      '<button class="btn blue big" id="ok">Save place</button>' + (it.location ? '<button type="button" class="btn alt big" id="tout" style="margin-top:8px">Take it out of ' + esc(locName(it.location)) + ' (no place yet)</button>' : '') +
+      '<button type="button" class="btn alt big" data-close style="margin-top:8px">Cancel</button>',
     (m, close) => {
+      if ($('#tout', m)) $('#tout', m).onclick = () => { close(); takeOut([it.code]); };
       $('#ok', m).onclick = async () => { close(); await act(it.code, { action: 'move', location: $('#lc', m).value, sublocation: $('#sub', m).value }, 'Place saved'); };
       $('#sc', m).onclick = () => { close(); openScanner({ mode: 'pickLoc', prompt: 'Scan the shelf / rack / bin sticker', onLoc: (l) => act(it.code, { action: 'move', location: l.code }, 'Now at ' + l.name) }); };
     });
@@ -562,6 +566,10 @@
     });
   }
   // ── Moving many at once ────────────────────────────────────────────────────
+  async function takeOut(codes) {
+    try { const r = await api('POST', '/api/move', { codes, out: true }); (r.items || []).forEach(upsert); SEL.clear(); render(true); selBar();
+      toast(r.moved + ' taken out — still in the inventory, no place set', 'good'); } catch (er) { toast(er.message, 'bad'); }
+  }
   async function moveMany(codes, dest) {
     const r = await api('POST', '/api/move', { codes, location: dest }); (r.items || []).forEach(upsert);
     toast(r.moved + ' item' + (r.moved === 1 ? '' : 's') + ' moved into ' + locName(dest) + ' ✓', 'good'); return r;
