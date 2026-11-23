@@ -187,8 +187,11 @@ function pushBackup(now) {
   pushTimer = setTimeout(send, 2000);
 }
 
+function resumeTagReads() {
+  store.items.filter((i) => wantsTagRead(i) && (!i.tag_read || i.tag_read.status === 'reading')).forEach(scheduleTagRead);
+}
 async function restoreFromBackup() {
-  if (restoreDone) return;
+  if (restoreDone) { resumeTagReads(); return; }
   try {
     const r = await fetch(BACKUP_URL, { headers: { 'x-staff-key': BACKUP_KEY } });
     if (r.status === 404) console.log('mirror is empty — starting fresh');
@@ -204,6 +207,9 @@ async function restoreFromBackup() {
     if (!hadLocalFile) save();
     if (pushWaiting) { pushWaiting = false; pushBackup(); }
     retryPendingPhotos();
+    // A deploy/restart drops the reader's 25 s timers: pick up photographed items it never got to,
+    // and any left mid-read. Items it already read (done / no tag) are not sent again.
+    resumeTagReads();
     broadcast({ t: 'reload' });
   } catch (e) {
     restoreTry++;
