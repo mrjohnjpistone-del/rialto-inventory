@@ -447,6 +447,7 @@
       '</dl><div class="row" style="margin-top:14px"><button class="btn alt" id="ed">Edit details</button>' +
       (copySources(it).length ? '<button class="btn alt" id="cfb">📋 Copy details from…</button>' : '') +
       (it.status !== 'Missing' ? '<button class="btn alt" id="ms">Can\'t find it</button>' : '') + '</div></div>' +
+      saleCard(it) +
       linksCard(it) +
       alterCard(it) +
       '<div class="card"><h3>More just like this one?</h3><p class="muted small">Identical items (ten green web belts)? Tap <b>Scan stickers to copy</b> and scan each one\'s sticker: each gets these details' + (it.photos.length ? ' and this photo' : '') + '. No new photos, no typing.</p>' +
@@ -476,6 +477,12 @@
     if ($('#cfb')) $('#cfb').onclick = () => editForm(it, null, true);
     $('#cpy').onclick = () => copyToSticker(it);
     $('#altAdd').onclick = () => alterForm(it);
+    $('#slSave').onclick = async () => {
+      const b = { for_sale: $('#sl_sale').checked, sale_price: $('#sl_price').value.trim(), for_rent: $('#sl_rent').checked, rent_rate: $('#sl_rate').value.trim() };
+      if (b.sale_price && !b.for_sale) b.for_sale = true;
+      if (b.rent_rate && !b.for_rent) b.for_rent = true;
+      try { const r = await api('PATCH', '/api/items/' + it.code, b); upsert(r.item); toast('Sale / rental saved', 'good'); render(true); } catch (e) { toast(e.message, 'bad'); }
+    };
     $('#lnAdd').onclick = () => linkPiece(it);
     $$('[data-unlink]').forEach((b) => b.onclick = async () => {
       if (!confirm('Unlink ' + b.dataset.unlink + ' from this piece?')) return;
@@ -562,6 +569,15 @@
           (live || isAdm ? '<div class="row" style="margin-top:6px">' + (live ? '<button class="btn sm" data-alt="' + a.id + ':undo">✓ Mark undone</button><button class="btn alt sm" data-alt="' + a.id + ':permanent">Keep it (make permanent)</button>' : '') +
             (isAdm ? '<button class="btn alt sm" style="color:var(--bad)" data-alt="' + a.id + ':delete">Delete</button>' : '') + '</div>' : '') + '</li>';
       }).join('') + '</ul>' : '<p class="muted small" style="margin:8px 0 0">None recorded. Hemmed, taken in, dyed, cut, painted? Log it here.</p>') + '</div>';
+  }
+  // ── For sale / rental (always visible on the item page) ────────────────────
+  function saleCard(it) {
+    return '<div class="card"><h3 style="margin:0 0 10px">💲 For sale / rental</h3>' +
+      '<div class="grid2"><div><label class="check"><input type="checkbox" id="sl_sale"' + (it.for_sale ? ' checked' : '') + '> For sale</label>' +
+        '<input id="sl_price" placeholder="Sale price, e.g. $40" value="' + esc(it.sale_price || '') + '" style="margin-top:6px"></div>' +
+      '<div><label class="check"><input type="checkbox" id="sl_rent"' + (it.for_rent ? ' checked' : '') + '> For rent</label>' +
+        '<input id="sl_rate" placeholder="Rental rate, e.g. $15 / week" value="' + esc(it.rent_rate || '') + '" style="margin-top:6px"></div></div>' +
+      '<button class="btn sm" id="slSave" style="margin-top:10px">Save sale / rental</button></div>';
   }
   // ── Pieces that go together (desk + topper) ────────────────────────────────
   const linked = (it) => (it.links || []).map(item).filter(Boolean);
