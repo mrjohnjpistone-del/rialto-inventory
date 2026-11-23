@@ -693,6 +693,7 @@
       '<fieldset class="fits"><legend>Who it fits <span class="muted small">(tick all that apply)</span></legend>' +
       FITS.map((f) => '<label class="check"><input type="checkbox" class="f_fit" value="' + esc(f) + '"' + ((v.fit || []).includes(f) ? ' checked' : '') + '> ' + esc(f) + '</label>').join('') + '</fieldset>' +
       '<label>Place<select id="f_location">' + locOpts(v.location) + '</select></label>' +
+      bookHtml(v) +
       rolesHtml(v.roles) +
       '<details' + (v.color || v.size || v.period || v.notes || v.description || v.tags || v.value || v.condition || v.sublocation ? ' open' : '') + '><summary style="font-weight:700;margin:4px 0 12px;cursor:pointer">More details (optional)</summary>' +
       '<label>Spot within the place<input id="f_sublocation" placeholder="top shelf, left end…" value="' + esc(v.sublocation || '') + '"></label>' +
@@ -736,6 +737,24 @@
     const cs = show ? rosterChars(show) : []; if (sel && !cs.some((c) => c.toLowerCase() === sel.toLowerCase())) cs.push(sel);
     return '<option value="">Whole show (no character)</option>' + cs.map((c) => '<option' + (c.toLowerCase() === String(sel).toLowerCase() ? ' selected' : '') + '>' + esc(c) + '</option>').join('') + (show ? '<option value="__new">+ New character…</option>' : '');
   }
+  const BOOK_ROLES = ['Stage manager', 'Assistant stage manager', 'Director', 'Lighting designer', 'Sound designer', 'Light board op', 'Sound board op',
+    'Curtain puller', 'Fly rail', 'Props master', 'Wardrobe', 'Music director', 'Actor script', 'Rehearsal script'];
+  function isBookDept(v) { return (v.fixedDept && v.fixedDept.p === 'BOOK') || (!v.fixedDept && /^BOOK$/i.test(((depts().find((d) => d.name === v.category) || {}).p) || '')); }
+  function bookHtml(v) {
+    const cur = (String(v.name || '').match(/ — (.+?) book$/) || [])[1] || '';
+    return '<div id="bookBox" class="banner" style="display:' + (isBookDept(v) ? 'block' : 'none') + '"><b>Prompt book / script</b> — belongs to one show. Pick the show below and whose book it is; the name fills itself in.' +
+      '<label style="margin:8px 0 0">Whose book?<select id="bk_role">' + opts(BOOK_ROLES.map((r) => [r, r]), BOOK_ROLES.includes(cur) ? cur : '', 'Pick one') + '</select></label></div>';
+  }
+  function bookAutoName() {
+    const box = $('#bookBox'); if (!box || box.style.display === 'none') return;
+    const show = ($('#roles .r_show') || {}).value || '', role = ($('#bk_role') || {}).value || '', nm = $('#f_name');
+    if (!nm || !show || show === '__new' || !role) return;
+    if (!nm.value.trim() || nm.dataset.auto === '1' || / — .+ book$/.test(nm.value)) { nm.value = show + ' — ' + role + ' book'; nm.dataset.auto = '1'; }
+  }
+  document.addEventListener('change', (e) => {
+    if (e.target.id === 'bk_role' || e.target.classList.contains('r_show')) bookAutoName();
+    if (e.target.id === 'f_category' && $('#bookBox')) { $('#bookBox').style.display = isBookDept({ category: e.target.value }) ? 'block' : 'none'; bookAutoName(); }
+  });
   function rolesHtml(roles) {
     return '<div style="margin:0 0 12px"><div style="font-weight:650;font-size:.92rem;margin-bottom:5px">Show &amp; character</div>' +
       '<div id="roles">' + ((roles && roles.length) ? roles.map(roleRow).join('') : roleRow(null)) + '</div>' +
@@ -969,7 +988,7 @@
       '<div class="sect"><h2>Characters</h2></div><div class="list">' + [...chars.values()].sort((a, b) => a.character.localeCompare(b.character)).map((r) =>
         '<a class="it" href="' + setHref(r) + '" data-nav><div class="th">☺</div><div class="bd"><div class="nm">' + esc(r.character) + '</div><div class="mt">' + r.n + ' item' + (r.n === 1 ? '' : 's') + '</div></div></a>').join('') + '</div>' +
       (chars.size ? '' : '<div class="card empty">No characters tagged for this show yet.</div>') +
-      Object.keys(byDept).sort().map((d) => '<div class="sect"><h2>' + esc(d) + '</h2></div><div class="list">' + byDept[d].sort((a, b) => a.name.localeCompare(b.name)).map((i) => rowHtml(i, '<div class="mt">' + esc(who(i)) + ' · ' + esc(locName(i.location) || 'No place set') + '</div>')).join('') + '</div>').join('') +
+      Object.keys(byDept).sort((a, b) => (/prompt book/i.test(b) ? 1 : 0) - (/prompt book/i.test(a) ? 1 : 0) || a.localeCompare(b)).map((d) => '<div class="sect"><h2>' + esc(d) + '</h2></div><div class="list">' + byDept[d].sort((a, b) => a.name.localeCompare(b.name)).map((i) => rowHtml(i, '<div class="mt">' + esc(who(i)) + ' · ' + esc(locName(i.location) || 'No place set') + '</div>')).join('') + '</div>').join('') +
       (its.length ? '' : '<div class="card empty">Nothing tagged for this show yet.</div>');
     if ($('#prShow')) $('#prShow').onclick = () => printCodes(its.map((i) => i.code));
     $('#ncf').onsubmit = async (e) => { e.preventDefault(); const n = $('#ncn').value.trim();

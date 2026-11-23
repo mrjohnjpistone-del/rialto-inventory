@@ -98,7 +98,7 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     r = await call('POST', '/api/import', { rows: [{ name: 'Top hat', category: 'HAT', location: 'Hat boxes', qty: '3' }, { name: 'Ladder', category: 'Ladders' }, { name: '' }] });
     ok(r.j.added === 1 && r.j.locations === 1 && r.j.skipped === 1, 'import: known dept added, unknown dept skipped');
     r = await call('GET', '/api/data'); const hat = r.j.items.find((i) => i.name === 'Top hat');
-    ok(hat && hat.code === 'HAT-0001' && hat.category === 'Hats' && hat.qty === 3 && r.j.settings.departments.length === 15, 'import maps dept code + qty');
+    ok(hat && hat.code === 'HAT-0001' && hat.category === 'Hats' && hat.qty === 3 && r.j.settings.departments.length === 16, 'import maps dept code + qty');
     r = await call('POST', '/api/settings', { departments: [{ p: 'PROP', name: 'Props', color: '#f2c200' }] }); ok(r.s === 400 && /COST/.test(r.j.error), 'cannot drop a department that has items');
 
     // SSE
@@ -185,6 +185,17 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     r = await call('PATCH', '/api/items/ACC-0080', { name: 'Details needed' });
     ok(r.j.item.needs_details === true, 'an item named "Details needed" stays on the need-details list');
     await call('DELETE', '/api/items/ACC-0080');
+
+    // Prompt books always belong to a show
+    r = await call('POST', '/api/items', { code: 'BOOK-0001', name: 'SM prompt book' });
+    ok(r.s === 400 && /show/.test(r.j.error), 'a prompt book without a show is refused');
+    r = await call('POST', '/api/items', { code: 'BOOK-0001', name: 'A Few Good Men — Stage manager book', roles: [{ show: 'A Few Good Men', character: '' }] });
+    ok(r.s === 200 && r.j.item.category === 'Scripts & prompt books', 'a prompt book with its show saves: ' + (r.j.error || ''));
+    r = await call('PATCH', '/api/items/BOOK-0001', { roles: [] });
+    ok(r.s === 400, 'cannot take the show off a prompt book');
+    r = await call('POST', '/api/items', { code: 'BOOK-0002', needs_details: true });
+    ok(r.s === 200, 'phone photo-only save of a book sticker still works');
+    await call('DELETE', '/api/items/BOOK-0001'); await call('DELETE', '/api/items/BOOK-0002');
 
     // One generic photo shared by identical items (green web belts)
     r = await call('POST', '/api/items', { name: 'Green web belt', category: 'ACC', size: 'One size' });

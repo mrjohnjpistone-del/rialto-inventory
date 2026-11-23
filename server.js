@@ -68,6 +68,7 @@ const DEFAULT_DEPTS = [
   { p: 'SND',  name: 'Sound & video',                 room: 'Lighting & sound', color: '#1e73be' },
   { p: 'RIG',  name: 'Rigging & hardware',            room: 'Shop & rigging', color: '#616161' },
   { p: 'TOOL', name: 'Tools',                         room: 'Shop & rigging', color: '#616161' },
+  { p: 'BOOK', name: 'Scripts & prompt books',        room: 'Stage management', color: '#ea580c' },
   { p: 'FOH',  name: 'Office & front of house',       room: 'Lobby & office', color: '#ffffff' },
   { p: 'LOAN', name: 'Borrowed / rented (not ours)',  room: 'Return to owner', color: '#c62828' },
 ];
@@ -361,6 +362,7 @@ setInterval(() => { for (const ip of [...loginFails.keys()]) loginBlocked(ip); }
 function findItem(code) { return store.items.find((i) => i.code === code || (i.aliases && i.aliases.includes(code))); }
 function codeTaken(code) { return !!findItem(code) || store.removed.some((i) => i.code === code); }
 function prefixOf(code) { return String(code).split('-')[0]; }
+function bookNeedsShow(prefix, roles) { return prefix === 'BOOK' && !(Array.isArray(roles) && roles.some((r) => r && String(r.show || '').trim())); }
 function deptByPrefix(p) { return store.settings.departments.find((d) => d.p === p); }
 function deptByName(n) { n = String(n || '').toLowerCase(); return store.settings.departments.find((d) => d.name.toLowerCase() === n || d.p.toLowerCase() === n); }
 function rosterShow(name, create) {
@@ -808,6 +810,8 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       if (b.needs_details && !s(b.name, 120)) b.name = 'Details needed';
       if (!s(b.name, 120)) return sendJson(res, 400, { error: 'Give the item a name.' });
+      if (!b.needs_details && bookNeedsShow(b.code ? prefixOf(normCode(b.code) || '') : (deptByName(b.category) || {}).p, b.roles))
+        return sendJson(res, 400, { error: 'Prompt books and scripts belong to a show: pick the show.' });
       let code = b.code ? normCode(b.code) : '';
       let dept;
       if (b.code) {
@@ -842,6 +846,8 @@ const server = http.createServer(async (req, res) => {
       if (method === 'PATCH' && !sub) {
         const b = await readBody(req);
         const prevLoc = item.location;
+        if (!item.needs_details && Object.prototype.hasOwnProperty.call(b, 'roles') && bookNeedsShow(prefixOf(item.code), b.roles))
+          return sendJson(res, 400, { error: 'Prompt books and scripts belong to a show: pick the show.' });
         const changed = applyFields(item, b);
         if (item.auto_fields) item.auto_fields = item.auto_fields.filter((f) => !Object.prototype.hasOwnProperty.call(b, f));
         if (item.needs_details && changed.includes('name') && item.name !== 'Details needed') { delete item.needs_details; changed.push('details added'); }
