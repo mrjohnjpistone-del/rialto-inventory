@@ -1595,9 +1595,18 @@
       '<div class="card"><h3>Spreadsheet</h3><div class="row"><a class="btn alt" href="/api/export.csv">Download everything (CSV)</a></div></div>' +
       (admin ? adminHtml(st) : '<form class="card" id="al"><h3>Department head sign-in</h3>' +
         '<label>Username<input id="au" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>' +
-        '<label>Password<input id="ap" type="password" autocomplete="current-password" required></label>' + showPwBox() + '<button class="btn alt big">Sign in as admin</button></form>');
+        '<label>Password<input id="ap" type="password" autocomplete="current-password" required></label>' + showPwBox() + '<button class="btn alt big">Sign in as admin</button>' +
+        '<p style="text-align:center;margin:10px 0 0"><a href="/forgot">Forgot password?</a></p></form>' +
+        '<form class="card" id="mk"><h3>Owner: master admin code</h3><p class="muted small">You are signed in as <b>crew</b>. To manage accounts and reset passwords, enter the master admin code.</p>' +
+        '<label>Master admin code<input id="mkc" autocomplete="off" autocapitalize="characters" required></label><button class="btn alt big">Sign in as owner</button></form>');
     if ($('#cn')) $('#cn').onclick = () => askName(true);
     if (D.me && !D.me.master) wirePwForm();
+    if (!admin) $('#mk').onsubmit = async (e) => {
+      e.preventDefault();
+      try { const r = await api('POST', '/api/login', { key: $('#mkc').value }); if (r.role !== 'admin') throw new Error('That is the crew code, not the master admin code.');
+        await load(); setWho(); render(); toast('Signed in as owner', 'good'); }
+      catch (er) { toast(er.message, 'bad'); }
+    };
     if (!admin) $('#al').onsubmit = async (e) => {
       e.preventDefault();
       try { await api('POST', '/api/login', { user: $('#au').value, password: $('#ap').value }); await load(); setWho(); render(); toast('Signed in as ' + D.me.name, 'good'); checkMustChange(); }
