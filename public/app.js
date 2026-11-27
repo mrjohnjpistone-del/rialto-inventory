@@ -256,6 +256,8 @@
     const welcome = new URLSearchParams(location.search).get('welcome');
     view.innerHTML =
       (welcome ? '<div class="banner">You are in. Scan any sticker with your camera, or use the red Scan button.</div>' : '') +
+      (D.admins || []).filter((a) => a.reset_requested).map((a) => '<div class="banner" style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap"><span><b>' + esc(a.name) + '</b> (' + esc(a.user) + ') forgot their password · ' + esc(when(a.reset_requested)) + '</span>' +
+        '<button class="btn sm" data-pwreset="' + esc(a.id) + '">Make new password</button></div>').join('') +
       '<div class="search"><input id="q" type="search" placeholder="Search everything — name, color, size, code…" enterkeyhint="search"></div>' +
       '<div class="tiles">' +
       '<button class="tile hero" id="scanT"><span class="ic">⌗</span><div><b>Scan a sticker</b><br><span>Opens the item — or starts a new one if the sticker is blank</span></div></button>' +
@@ -1635,7 +1637,7 @@
     if (!D.me || !D.me.manager) return '';
     return '<div class="card"><h3>Admin accounts</h3><p class="muted small">Each department head signs in with their own username and password. New accounts and resets get a temporary password they must change the first time.</p>' +
       '<ul class="hist">' + D.admins.map((a) => '<li><b>' + esc(a.name) + '</b> · <span class="code">' + esc(a.user) + '</span>' + (a.manager ? ' · owner' : '') +
-        (a.must_change ? ' · <span class="muted">temporary password</span>' : '') + '<br><span class="muted small">' + (a.last_login ? 'last sign-in ' + esc(when(a.last_login)) : 'never signed in') + '</span>' +
+        (a.must_change ? ' · <span class="muted">temporary password</span>' : '') + (a.reset_requested ? ' · <b style="color:var(--bad)">asked for a new password</b>' : '') + '<br><span class="muted small">' + (a.last_login ? 'last sign-in ' + esc(when(a.last_login)) : 'never signed in') + '</span>' +
         '<div class="row" style="margin-top:6px"><button class="btn alt sm" data-reset="' + a.id + '">Reset password</button>' +
         (D.me.id === a.id ? '' : '<button class="btn alt sm" data-del="' + a.id + '" style="color:var(--bad)">Remove</button>') + '</div></li>').join('') + '</ul>' +
       (D.admins.length ? '' : '<p class="muted">No accounts yet.</p>') +
@@ -1643,9 +1645,16 @@
       '<label>Username<input id="nau" placeholder="costumes" autocapitalize="none" spellcheck="false" required></label></div>' +
       '<label class="check"><input type="checkbox" id="nam"> Owner (can manage accounts and codes)</label><button class="btn alt big">Add account</button></form></div>';
   }
+  document.addEventListener('click', async (e) => {
+    const b = e.target.closest && e.target.closest('[data-pwreset]'); if (!b) return;
+    const a = (D.admins || []).find((x) => x.id === b.dataset.pwreset); if (!a) return;
+    b.disabled = true;
+    try { const r = await api('POST', '/api/admins/' + a.id + '/reset'); await load(); render(); showTemp(r.admin, r.temp_password); }
+    catch (er) { toast(er.message, 'bad'); b.disabled = false; }
+  });
   function showTemp(a, temp) {
     modal('<h2>Temporary password for ' + esc(a.name) + '</h2><p>Username: <b class="code">' + esc(a.user) + '</b></p><p>Temporary password: <b class="code" style="font-size:1.3rem">' + esc(temp) + '</b></p>' +
-      '<p class="muted small">Write it down now — it is not shown again. They will be asked to choose their own password the first time they sign in.</p><button class="btn big" data-close>Done</button>');
+      '<p class="muted small">Write it down now and give it to them (text it or tell them) — it is not shown again. They will be asked to choose their own password the first time they sign in.</p><button class="btn big" data-close>Done</button>');
   }
   function adminHtml(st) {
     return accountsHtml() + '<div class="card"><h3>Invite the crew</h3><p>Print the poster and tape it up, or text people this link (it signs them in):</p>' +

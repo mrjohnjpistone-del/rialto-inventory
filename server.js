@@ -269,6 +269,9 @@ function num(v, min, max, dflt) { const n = Math.round(Number(v)); return Number
 function money(v) { const n = Number(String(v || '').replace(/[$,\s]/g, '')); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null; }
 function esc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function clientIp(req) {
+  // Cloudflare (in front of Render) sets these to the real phone's address; they cannot be forged through it.
+  const cf = req.headers['cf-connecting-ip'] || req.headers['true-client-ip'];
+  if (cf) return String(cf).trim();
   const xf = req.headers['x-forwarded-for'];
   // Rightmost entry = the address Render's own proxy saw; leftmost entries are client-controlled.
   return (xf ? String(xf).split(',').pop().trim() : '') || req.socket.remoteAddress || 'unknown';
@@ -325,7 +328,7 @@ function isManager(req) {
   return (cookies(req).rk || '') === store.settings.admin_key;
 }
 function tempPassword() { return 'Rialto-' + randKey(6); }
-function adminOut(a) { return { id: a.id, name: a.name, user: a.user, manager: !!a.manager, must_change: !!a.must_change, created_at: a.created_at, last_login: a.last_login || '' }; }
+function adminOut(a) { return { id: a.id, name: a.name, user: a.user, manager: !!a.manager, must_change: !!a.must_change, created_at: a.created_at, last_login: a.last_login || '', reset_requested: a.reset_requested || '' }; }
 function role(req) {
   if (account(req)) return 'admin';
   const k = cookies(req).rk || req.headers['x-key'] || '';
@@ -684,7 +687,19 @@ function loginPage(msg) {
     '<label>Password<input name="password" type="password" autocomplete="current-password" required></label>' +
     '<label class="check"><input type="checkbox" onchange="this.form.password.type=this.checked?\'text\':\'password\'"> Show password</label>' +
     '<input type="hidden" name="next" value=""><button class="btn alt big">Sign in</button></form>' +
+    '<p style="text-align:center;margin-top:14px"><a href="/forgot">Forgot password?</a></p>' +
     '<script>document.querySelectorAll("[name=next]").forEach(function(e){e.value=location.pathname+location.search})</script></main></body></html>';
+}
+
+function forgotPage(msg, done) {
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>Forgot password · Rialto Inventory</title><link rel="stylesheet" href="/app.css"></head><body class="login"><main class="card narrow">' +
+    '<h1>Forgot password</h1>' + (msg ? '<p class="' + (done ? 'ok' : 'err') + '">' + esc(msg) + '</p>' : '') +
+    (done ? '' : '<p>Type your username. Jay or Brenda gets the request on their Home screen and gives you a new temporary password.</p>' +
+      '<form method="post" action="/forgot"><label>Username<input name="user" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></label>' +
+      '<button class="btn big">Ask for a new password</button></form>') +
+    '<p class="muted" style="margin-top:14px">Crew members do not have a password: they only need the crew code.</p>' +
+    '<p style="text-align:center"><a href="/">Back to sign in</a></p></main></body></html>';
 }
 
 // ── Server ───────────────────────────────────────────────────────────────────
@@ -727,11 +742,12 @@ const server = http.createServer(async (req, res) => {
           loginFailed(ip);
           return p === '/login' ? sendHtml(res, loginPage('Wrong username or password.'), 401) : sendJson(res, 401, { error: 'Wrong username or password.' });
         }
-        a.last_login = new Date().toISOString(); save();
+        a.last_login = new Date().toISOString(); delete a.reset_requested; save();
         setAdminCookie(res, a);
         if (p === '/login') { res.writeHead(303, { Location: safeNext }); return res.end(); }
         return sendJson(res, 200, { ok: true, role: 'admin', must_change: !!a.must_change });
       }
+      if (!restoreDone) return p === '/login' ? sendHtml(res, loginPage('Starting up. Try again in a few seconds.'), 503) : sendJson(res, 503, { error: 'Starting up. Try again in a few seconds.', starting: true });
       const ok = key && (key === store.settings.crew_key.toUpperCase() || key === store.settings.admin_key.toUpperCase());
       if (!ok) {
         loginFailed(ip);
@@ -741,6 +757,18 @@ const server = http.createServer(async (req, res) => {
       setKeyCookie(res, real);
       if (p === '/login') { res.writeHead(303, { Location: next.startsWith('/') && !next.startsWith('//') ? next : '/' }); return res.end(); }
       return sendJson(res, 200, { ok: true, role: real === store.settings.admin_key ? 'admin' : 'crew' });
+    }
+    if (p === '/forgot' && method === 'GET') return sendHtml(res, forgotPage(''));
+    if (p === '/forgot' && method === 'POST') {
+      const ip = clientIp(req);
+      if (loginBlocked(ip)) return sendHtml(res, forgotPage('Too many tries. Wait 15 minutes.'), 429);
+      if (!restoreDone) return sendHtml(res, forgotPage('Starting up. Try again in a few seconds.'), 503);
+      const f = new URLSearchParams(await readText(req, 2048));
+      const user = s(f.get('user'), 40).toLowerCase();
+      const a = store.admins.find((x) => x.user === user);
+      if (!a) { loginFailed(ip); return sendHtml(res, forgotPage('No account with that username. Check the spelling, or ask Jay or Brenda.'), 404); }
+      a.reset_requested = new Date().toISOString(); save();
+      return sendHtml(res, forgotPage('Request sent. Jay or Brenda will give you a new temporary password. Use it to sign in, then pick your own.', true));
     }
     if (p === '/logout') { res.setHeader('Set-Cookie', ['rk=; Path=/; Max-Age=0', 'ra=; Path=/; Max-Age=0']); res.writeHead(302, { Location: '/' }); return res.end(); }
 
@@ -1195,7 +1223,7 @@ const server = http.createServer(async (req, res) => {
       if (!a) return sendJson(res, 404, { error: 'No such account.' });
       if (method === 'POST' && am[2]) {
         const temp = tempPassword(); a.salt = crypto.randomBytes(16).toString('hex'); a.hash = hashPw(temp, a.salt);
-        a.ver = (a.ver || 0) + 1; a.must_change = true; save();
+        a.ver = (a.ver || 0) + 1; a.must_change = true; delete a.reset_requested; save();
         return sendJson(res, 200, { ok: true, admin: adminOut(a), temp_password: temp });
       }
       if (method === 'DELETE' && !am[2]) {

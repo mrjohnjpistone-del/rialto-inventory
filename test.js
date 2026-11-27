@@ -304,10 +304,21 @@ const JPG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////
     cookie = tempCookie; r = await call('GET', '/api/data'); ok(r.s === 401, 'old sessions signed out after password change');
     cookie = ''; r = await call('POST', '/api/login', { user: 'costumes', password: temp }); ok(r.s === 401, 'temp password no longer works');
     r = await call('POST', '/api/login', { user: 'costumes', password: 'Gowns&Hats2027' }); ok(r.s === 200 && !r.j.must_change, 'login with own password');
+    // Forgot password: login page links it, the request reaches the owner, reset clears it
+    cookie = ''; r = await call('GET', '/'); ok(r.t.includes('href="/forgot"'), 'login page has Forgot password link');
+    r = await call('GET', '/forgot'); ok(r.s === 200 && r.t.includes('name="user"'), 'forgot page loads');
+    let fr = await fetch(INV + '/forgot', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'cf-connecting-ip': '10.0.0.5' }, body: 'user=Costumes' });
+    let ft = await fr.text(); ok(fr.status === 200 && ft.includes('Request sent'), 'forgot password request accepted');
+    fr = await fetch(INV + '/forgot', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'cf-connecting-ip': '10.0.0.5' }, body: 'user=nobody' });
+    ok(fr.status === 404, 'forgot password: unknown username told');
     cookie = masterCookie;
-    r = await call('POST', '/api/admins/' + cid + '/reset'); ok(r.s === 200 && r.j.temp_password && r.j.admin.must_change, 'owner resets a forgotten password');
+    r = await call('GET', '/api/data'); ok(r.j.admins.find((a) => a.id === cid).reset_requested, 'owner sees the reset request');
+    r = await call('POST', '/api/admins/' + cid + '/reset'); ok(r.s === 200 && r.j.temp_password && r.j.admin.must_change && !r.j.admin.reset_requested, 'owner resets a forgotten password (request cleared)');
     cookie = ''; r = await call('POST', '/api/login', { user: 'costumes', password: 'Gowns&Hats2027' }); ok(r.s === 401, 'old password dead after reset');
     cookie = masterCookie;
+    for (let i = 0; i < 12; i++) await call('POST', '/api/login', { key: 'nope' }, { 'cf-connecting-ip': '10.9.9.9' });
+    r = await call('POST', '/api/login', { key: 'nope' }, { 'cf-connecting-ip': '10.9.9.9' }); ok(r.s === 429, 'typo-ing phone gets locked out');
+    r = await call('POST', '/api/login', { key: 'CREW-TEST' }, { 'cf-connecting-ip': '10.9.9.10' }); ok(r.s === 200, 'other phones behind the same proxy still sign in');
     r = await call('DELETE', '/api/admins/' + cid); ok(r.s === 200, 'owner removes account');
     r = await call('GET', '/api/data'); ok(r.j.admins.length === 0, 'account gone');
 
